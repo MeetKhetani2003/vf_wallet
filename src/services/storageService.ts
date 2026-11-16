@@ -7,22 +7,20 @@ import {
   AuthUser,
 } from '../types';
 import { STORAGE_KEYS, DEFAULT_BONUS_PERCENTAGE } from '../utils/constants';
-import { INITIAL_MOCK_USERS } from '../data/mockUsers';
-import { INITIAL_MOCK_TRANSACTIONS } from '../data/mockTransactions';
 
 export const storageService = {
   /**
-   * Initializes local demo storage with seed data if not present.
+   * Initializes local storage with pristine zero-state defaults.
    */
   async initializeDefaults(): Promise<void> {
     try {
       const initialized = await AsyncStorage.getItem(
-        STORAGE_KEYS.INITIALIZED + '_v2_zero_state'
+        STORAGE_KEYS.INITIALIZED + '_v3_clean_slate'
       );
       if (!initialized) {
         await AsyncStorage.multiSet([
-          [STORAGE_KEYS.USERS, JSON.stringify(INITIAL_MOCK_USERS)],
-          [STORAGE_KEYS.TRANSACTIONS, JSON.stringify(INITIAL_MOCK_TRANSACTIONS)],
+          [STORAGE_KEYS.USERS, JSON.stringify([])],
+          [STORAGE_KEYS.TRANSACTIONS, JSON.stringify([])],
           [
             STORAGE_KEYS.BONUS_CONFIG,
             JSON.stringify({
@@ -39,7 +37,7 @@ export const storageService = {
                 userId: 'all',
                 title: 'Welcome to VF Wallet!',
                 message:
-                  'Share or select a payment screenshot to start earning 5% bonus on approved deposits.',
+                  'Submit your deposit screenshot or transaction reference (UTR) to earn bonus on approved deposits.',
                 type: 'bonus',
                 read: false,
                 createdAt: new Date().toISOString(),
@@ -47,7 +45,7 @@ export const storageService = {
             ] as AppNotification[]),
           ],
           [STORAGE_KEYS.INITIALIZED, 'true'],
-          [STORAGE_KEYS.INITIALIZED + '_v2_zero_state', 'true'],
+          [STORAGE_KEYS.INITIALIZED + '_v3_clean_slate', 'true'],
         ]);
       }
     } catch (e) {
@@ -81,13 +79,13 @@ export const storageService = {
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.USERS);
       if (!data) {
-        await this.setUsers(INITIAL_MOCK_USERS);
-        return INITIAL_MOCK_USERS;
+        await this.setUsers([]);
+        return [];
       }
       return JSON.parse(data);
     } catch (e) {
       console.error('Error getting users:', e);
-      return INITIAL_MOCK_USERS;
+      return [];
     }
   },
 
@@ -103,13 +101,13 @@ export const storageService = {
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
       if (!data) {
-        await this.setTransactions(INITIAL_MOCK_TRANSACTIONS);
-        return INITIAL_MOCK_TRANSACTIONS;
+        await this.setTransactions([]);
+        return [];
       }
       return JSON.parse(data);
     } catch (e) {
       console.error('Error getting transactions:', e);
-      return INITIAL_MOCK_TRANSACTIONS;
+      return [];
     }
   },
 
@@ -177,7 +175,7 @@ export const storageService = {
   },
 
   /**
-   * DANGEROUS: Clears all stored data and re-seeds pristine defaults.
+   * Resets all stored data and re-seeds pristine zero defaults.
    */
   async resetAllApplicationData(): Promise<void> {
     try {
@@ -188,8 +186,9 @@ export const storageService = {
         STORAGE_KEYS.BONUS_CONFIG,
         STORAGE_KEYS.NOTIFICATIONS,
         STORAGE_KEYS.INITIALIZED,
+        STORAGE_KEYS.INITIALIZED + '_v2_zero_state',
+        STORAGE_KEYS.INITIALIZED + '_v3_clean_slate',
       ]);
-      // Re-seed defaults
       await this.initializeDefaults();
     } catch (e) {
       console.error('Error resetting application data:', e);
@@ -197,4 +196,3 @@ export const storageService = {
     }
   },
 };
-

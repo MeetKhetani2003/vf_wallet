@@ -1,13 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -30,9 +29,15 @@ import { User } from '../../types';
 export const WithdrawScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
   const { user } = useAuth();
-  const { userWallet, createWithdrawal } = useWallet();
+  const { userWallet, createWithdrawal, refreshData } = useWallet();
 
   const currentUser = user && user.role === 'user' ? (user as User) : null;
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshData();
+    }, [refreshData])
+  );
 
   const [payoutMethod, setPayoutMethod] = useState<'upi' | 'bank'>('upi');
   const [amountStr, setAmountStr] = useState('2000');
@@ -46,18 +51,48 @@ export const WithdrawScreen = () => {
     currentUser?.bankAccount?.accountHolderName || user?.name || ''
   );
 
+  React.useEffect(() => {
+    if (currentUser?.upiId && !upiId) {
+      setUpiId(currentUser.upiId);
+    }
+    if ((currentUser?.name || user?.name) && !accountHolderName) {
+      setAccountHolderName(currentUser?.name || user?.name || '');
+    }
+  }, [currentUser, user]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successModalVisible, setSuccessModalVisible] = useState(false);
   const [createdTxnId, setCreatedTxnId] = useState('');
 
-  const availablePaise = userWallet ? userWallet.availableBalancePaise : 0;
-  const availableRupees = paiseToRupees(availablePaise);
+  // Balance and Rule-Based Threshold Calculations
+  const totalBalancePaise = userWallet ? userWallet.availableBalancePaise : 0;
   const totalDepositPaise = userWallet ? userWallet.totalDepositPaise : 0;
   const totalBonusPaise = userWallet ? userWallet.totalBonusPaise : 0;
   const alreadyWithdrawnPaise = userWallet
     ? userWallet.totalWithdrawalPaise
     : 0;
+
+  const thresholdLimitPaise =
+    userWallet?.bonusThresholdLimitPaise ??
+    currentUser?.bonusThresholdLimitPaise ??
+    1000000; // default ₹10,000
+
+  const isThresholdReached =
+    userWallet?.isThresholdReached ??
+    totalBalancePaise >= thresholdLimitPaise;
+
+  // Real Money withdrawable under platform rules:
+  // If points >= threshold, withdrawable = min(totalBalance, depositedPrincipal).
+  // Otherwise, full balance is eligible.
+  const eligibleWithdrawablePaise =
+    userWallet?.withdrawablePaise !== undefined
+      ? userWallet.withdrawablePaise
+      : isThresholdReached
+      ? Math.min(totalBalancePaise, totalDepositPaise)
+      : totalBalancePaise;
+
+  const maxWithdrawableRupees = paiseToRupees(eligibleWithdrawablePaise);
 
   const quickPercentages = [
     { label: '25%', percentage: 25 },
@@ -70,8 +105,43 @@ export const WithdrawScreen = () => {
     setError('');
     const requestedPaise = rupeesToPaise(amountStr || '0');
 
+    if (requestedPaise <= 0) {
+      setError('Please enter a valid withdrawal amount.');
+      return;
+    }
+
+    if (requestedPaise > totalBalancePaise) {
+      setError(
+        `Insufficient points. Your current wallet balance is ${formatPaiseToINR(
+          totalBalancePaise
+        )}.`
+      );
+      return;
+    }
+
+    if (requestedPaise > eligibleWithdrawablePaise) {
+      if (isThresholdReached) {
+        setError(
+          `Requested payout of ${formatPaiseToINR(
+            requestedPaise
+          )} exceeds eligible withdrawable real cash (${formatPaiseToINR(
+            eligibleWithdrawablePaise
+          )}). As your points have reached or exceeded your threshold limit of ${formatPaiseToINR(
+            thresholdLimitPaise
+          )}, bonus points cannot be withdrawn.`
+        );
+      } else {
+        setError(
+          `Requested amount exceeds eligible withdrawable cash of ${formatPaiseToINR(
+            eligibleWithdrawablePaise
+          )}.`
+        );
+      }
+      return;
+    }
+
     // Central validation
-    const validation = validateWithdrawal(availablePaise, requestedPaise);
+    const validation = validateWithdrawal(eligibleWithdrawablePaise, requestedPaise);
     if (!validation.isValid) {
       setError(validation.error || 'Invalid withdrawal amount.');
       return;
@@ -126,7 +196,7 @@ export const WithdrawScreen = () => {
 
   const handleSuccessDone = () => {
     setSuccessModalVisible(false);
-    navigation.navigate('UserDashboard');
+    navigation.navigate('UserTabs');
   };
 
   return (
@@ -138,24 +208,32 @@ export const WithdrawScreen = () => {
         onBackPress={() => navigation.goBack()}
       />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.content}
-      >
-        {/* Wallet Balance Summary Card */}
+      <View style={styles.content}>
+        {/* Real-Time Balance & Withdrawable Breakdown Card */}
         <View style={styles.summaryCard}>
-          <View style={styles.availableBox}>
-            <Text style={styles.availableLabel}>Current Available Balance</Text>
-            <Text style={styles.availableValue}>
-              {formatPaiseToINR(availablePaise)}
-            </Text>
+          <View style={styles.summaryHeaderRow}>
+            <View style={styles.breakdownBox}>
+              <Text style={styles.availableLabel}>Total Wallet Points</Text>
+              <Text style={styles.availableValue}>
+                {formatPaiseToINR(totalBalancePaise)}
+              </Text>
+            </View>
+            <View style={styles.verticalDivider} />
+            <View style={styles.breakdownBox}>
+              <Text style={[styles.availableLabel, styles.withdrawableLabel]}>
+                Eligible Real Money
+              </Text>
+              <Text style={[styles.availableValue, styles.withdrawableValue]}>
+                {formatPaiseToINR(eligibleWithdrawablePaise)}
+              </Text>
+            </View>
           </View>
 
           <View style={styles.summaryDivider} />
 
           <View style={styles.summaryGrid}>
             <View style={styles.gridCol}>
-              <Text style={styles.gridLabel}>Total Deposit</Text>
+              <Text style={styles.gridLabel}>Deposited Principal</Text>
               <Text style={styles.gridValue}>
                 {formatPaiseToINR(totalDepositPaise)}
               </Text>
@@ -167,13 +245,35 @@ export const WithdrawScreen = () => {
               </Text>
             </View>
             <View style={styles.gridCol}>
-              <Text style={styles.gridLabel}>Already Withdrawn</Text>
+              <Text style={styles.gridLabel}>Threshold Limit</Text>
               <Text style={styles.gridValue}>
-                {formatPaiseToINR(alreadyWithdrawnPaise)}
+                {formatPaiseToINR(thresholdLimitPaise)}
               </Text>
             </View>
           </View>
         </View>
+
+        {/* Threshold Warning Notice if total points reach or exceed the assigned user limit */}
+        {isThresholdReached ? (
+          <View style={styles.thresholdWarningCard}>
+            <View style={styles.thresholdWarningHeader}>
+              <Ionicons name="warning" size={20} color="#D97706" />
+              <Text style={styles.thresholdWarningTitle}>
+                Threshold Rule Active ({formatPaiseToINR(thresholdLimitPaise)})
+              </Text>
+            </View>
+            <Text style={styles.thresholdWarningDesc}>
+              Your total wallet balance points ({formatPaiseToINR(totalBalancePaise)}) have reached or exceeded your assigned limit of {formatPaiseToINR(thresholdLimitPaise)}. In accordance with platform policy, bonus points beyond this limit cannot be cashed out as real money. You can withdraw up to your deposited principal of {formatPaiseToINR(eligibleWithdrawablePaise)}.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.thresholdNoticeCard}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.primary} />
+            <Text style={styles.thresholdNoticeText}>
+              Threshold Limit: {formatPaiseToINR(thresholdLimitPaise)}. Full available points are eligible for payout.
+            </Text>
+          </View>
+        )}
 
         {/* Withdrawal Amount Input */}
         <View style={styles.card}>
@@ -185,7 +285,7 @@ export const WithdrawScreen = () => {
               if (error) setError('');
             }}
             quickPercentages={quickPercentages}
-            maxAvailableRupees={availableRupees}
+            maxAvailableRupees={maxWithdrawableRupees}
             placeholder="0"
             error={error}
           />
@@ -250,6 +350,9 @@ export const WithdrawScreen = () => {
                 onChangeText={(text) => setUpiId(text)}
                 leftIcon="card-outline"
                 autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                returnKeyType="next"
               />
               <CustomInput
                 label="Beneficiary Full Name"
@@ -257,6 +360,8 @@ export const WithdrawScreen = () => {
                 value={accountHolderName}
                 onChangeText={(text) => setAccountHolderName(text)}
                 leftIcon="person-outline"
+                autoCapitalize="words"
+                returnKeyType="done"
               />
             </View>
           ) : (
@@ -312,7 +417,7 @@ export const WithdrawScreen = () => {
           size="lg"
           style={styles.submitBtn}
         />
-      </KeyboardAvoidingView>
+      </View>
 
       {/* Confirmation Modal */}
       <ConfirmationModal
@@ -348,6 +453,65 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2,
+  },
+  summaryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  breakdownBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  verticalDivider: {
+    width: 1,
+    height: 38,
+    backgroundColor: colors.divider,
+  },
+  withdrawableLabel: {
+    color: '#059669',
+  },
+  withdrawableValue: {
+    color: '#059669',
+  },
+  thresholdWarningCard: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+  },
+  thresholdWarningHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  thresholdWarningTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#B45309',
+  },
+  thresholdWarningDesc: {
+    fontSize: 12,
+    color: '#92400E',
+    lineHeight: 18,
+  },
+  thresholdNoticeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.surfaceAlt,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 16,
+  },
+  thresholdNoticeText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    flex: 1,
   },
   availableBox: {
     alignItems: 'center',

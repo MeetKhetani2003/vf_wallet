@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Image,
+  Alert,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -13,27 +14,63 @@ import { colors } from '../../theme/colors';
 import { ScreenContainer } from '../../components/common/ScreenContainer';
 import { Header } from '../../components/common/Header';
 import { ConfirmationModal } from '../../components/modals/ConfirmationModal';
+import { EditProfileModal } from '../../components/modals/EditProfileModal';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
 
 export const AdminProfileScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { user, logout } = useAuth();
-  const { adminStats } = useWallet();
+  const { user, logout, updateProfile, refreshSession } = useAuth();
+  const { adminStats, refreshData } = useWallet();
 
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleConfirmLogout = async () => {
     setLogoutModalVisible(false);
     await logout();
   };
 
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await Promise.all([refreshSession(), refreshData()]);
+    } catch (e) {
+      console.warn('Error refreshing admin profile:', e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleSaveProfile = async (data: {
+    name?: string;
+    email?: string;
+    phone?: string;
+  }) => {
+    const res = await updateProfile(data);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
   return (
-    <ScreenContainer scrollable backgroundColor={colors.background}>
+    <ScreenContainer
+      scrollable
+      backgroundColor={colors.background}
+      onRefresh={handleRefresh}
+      refreshing={isRefreshing}
+    >
       <Header
         title="Admin Settings"
         showBack
         onBackPress={() => navigation.goBack()}
+        rightAction={
+          <TouchableOpacity onPress={handleRefresh} style={{ padding: 4 }}>
+            <Ionicons name="refresh-outline" size={22} color={colors.text} />
+          </TouchableOpacity>
+        }
       />
 
       <View style={styles.content}>
@@ -49,11 +86,22 @@ export const AdminProfileScreen = () => {
             )}
 
             <View style={styles.userInfo}>
-              <Text style={styles.userName}>{user?.name}</Text>
+              <View style={styles.nameRow}>
+                <Text style={styles.userName}>{user?.name || 'Administrator'}</Text>
+                <TouchableOpacity
+                  style={styles.editBtn}
+                  onPress={() => setEditModalVisible(true)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="pencil" size={13} color={colors.primary} />
+                  <Text style={styles.editBtnText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
               <Text style={styles.adminRoleTitle}>
                 {(user as any)?.adminRoleTitle || 'System Administrator'}
               </Text>
-              <Text style={styles.userEmail}>{user?.email}</Text>
+              <Text style={styles.userEmail}>{user?.email || 'admin@vfwallet.com'}</Text>
+              <Text style={styles.userPhone}>+91 {user?.phone}</Text>
             </View>
           </View>
         </View>
@@ -66,7 +114,7 @@ export const AdminProfileScreen = () => {
             <Text style={styles.infoLabel}>Platform Status</Text>
             <View style={styles.statusPill}>
               <View style={styles.greenDot} />
-              <Text style={styles.statusPillText}>Operational (Demo Mode)</Text>
+              <Text style={styles.statusPillText}>Operational (Neon Cloud)</Text>
             </View>
           </View>
 
@@ -90,6 +138,20 @@ export const AdminProfileScreen = () => {
         {/* Administration Actions */}
         <View style={styles.card}>
           <Text style={styles.cardHeading}>Administrative Controls</Text>
+
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={() => setEditModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.menuItemLeft}>
+              <View style={[styles.menuIconCircle, { backgroundColor: colors.lightBlue }]}>
+                <Ionicons name="person-outline" size={18} color={colors.primary} />
+              </View>
+              <Text style={styles.menuItemText}>Edit Administrator Profile</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.menuItem}
@@ -138,6 +200,15 @@ export const AdminProfileScreen = () => {
 
         <Text style={styles.versionText}>VF Wallet Admin Console v1.0.0</Text>
       </View>
+
+      {/* Edit Profile Modal */}
+      <EditProfileModal
+        visible={editModalVisible}
+        user={user}
+        initialTab="personal"
+        onClose={() => setEditModalVisible(false)}
+        onSave={handleSaveProfile}
+      />
 
       {/* Logout Confirmation */}
       <ConfirmationModal
@@ -194,10 +265,29 @@ const styles = StyleSheet.create({
   userInfo: {
     flex: 1,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   userName: {
     fontSize: 18,
     fontWeight: '800',
     color: colors.text,
+  },
+  editBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.lightBlue,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    gap: 4,
+  },
+  editBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.primary,
   },
   adminRoleTitle: {
     fontSize: 12,
@@ -209,6 +299,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textSecondary,
     marginTop: 2,
+  },
+  userPhone: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 1,
   },
   cardHeading: {
     fontSize: 14,
@@ -285,4 +380,3 @@ const styles = StyleSheet.create({
 });
 
 export default AdminProfileScreen;
-

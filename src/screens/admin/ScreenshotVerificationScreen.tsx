@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   Image,
   Alert,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -37,15 +37,21 @@ export const ScreenshotVerificationScreen = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  useFocusEffect(
+    useCallback(() => {
+      refreshData();
+    }, [refreshData])
+  );
+
   const onRefresh = async () => {
     setRefreshing(true);
     await refreshData();
     setRefreshing(false);
   };
 
-  // Only consider transactions that have screenshots or OCR results
+  // Consider deposit transactions (whether with screenshot, OCR, or UTR)
   const screenshotTransactions = transactions
-    .filter((t) => t.type === 'deposit' && (t.screenshotUri || t.ocrResult))
+    .filter((t) => t.type === 'deposit')
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -399,7 +405,7 @@ export const ScreenshotVerificationScreen = () => {
           selectedTxn
             ? `Deposit: ${formatPaiseToINR(
                 selectedTxn.amountPaise
-              )}\nBonus (${selectedTxn.bonusPercentage || 5}%): ${formatPaiseToINR(
+              )}\nBonus (${selectedTxn.bonusPercentage ?? 10}%): ${formatPaiseToINR(
                 selectedTxn.bonusPaise || 0
               )}\nTotal Credit: ${formatPaiseToINR(
                 selectedTxn.totalCreditPaise || selectedTxn.amountPaise

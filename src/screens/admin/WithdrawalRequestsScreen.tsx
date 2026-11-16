@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -19,6 +19,7 @@ import { ConfirmationModal } from '../../components/modals/ConfirmationModal';
 import { RejectionModal } from '../../components/modals/RejectionModal';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useWallet } from '../../hooks/useWallet';
+import { adminApi } from '../../services/api';
 import { formatPaiseToINR } from '../../utils/currency';
 import { calculateUserWallet } from '../../utils/calculations';
 import { Transaction } from '../../types';
@@ -40,10 +41,65 @@ export const WithdrawalRequestsScreen = () => {
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [livePendingList, setLivePendingList] = useState<Transaction[]>([]);
+
+  const fetchLivePending = useCallback(async () => {
+    try {
+      const res = await adminApi.getPendingWithdrawals();
+      if (res.success && Array.isArray(res.transactions)) {
+        const mapped = res.transactions.map((t: any) => {
+          let parsedData = t.rawOcrData;
+          if (typeof parsedData === 'string') {
+            try {
+              parsedData = JSON.parse(parsedData);
+            } catch {
+              // ignore
+            }
+          }
+
+          return {
+            id: t.id,
+            userId: t.userId,
+            userName: t.user?.name || t.userName || 'User',
+            userPhone: t.user?.phone || t.userPhone || '',
+            amountPaise: t.amountPaise,
+            withdrawablePaise:
+              t.withdrawablePaise ?? t.eligibleWithdrawablePaise ?? t.amountPaise,
+            eligibleWithdrawablePaise: t.eligibleWithdrawablePaise,
+            isThresholdReached: t.isThresholdReached,
+            totalDepositPrincipalPaise: t.totalDepositPrincipalPaise,
+            userTotalBalancePaise: t.user?.totalBalancePaise ?? t.amountPaise,
+            userThresholdLimitPaise: t.user?.bonusThresholdLimitPaise ?? 1000000,
+            paymentMethod: t.paymentApp || t.paymentMethod,
+            bankDetails: parsedData?.accountNumber ? parsedData : undefined,
+            upiId:
+              parsedData?.upiId ||
+              (t.paymentApp?.includes('UPI:')
+                ? t.paymentApp.replace('UPI:', '').trim()
+                : undefined),
+            type: 'withdrawal' as const,
+            status: 'pending' as const,
+            createdAt: t.createdAt,
+            rejectionReason: t.rejectionReason,
+          };
+        });
+        setLivePendingList(mapped);
+      }
+    } catch (e) {
+      console.warn('Failed to load pending withdrawals:', e);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshData();
+      fetchLivePending();
+    }, [refreshData, fetchLivePending])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await refreshData();
+    await Promise.all([refreshData(), fetchLivePending()]);
     setRefreshing(false);
   };
 
@@ -54,26 +110,17 @@ export const WithdrawalRequestsScreen = () => {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-  const displayedList = withdrawalTransactions.filter(
-    (t) => t.status === activeTab
-  );
+  const displayedList =
+    activeTab === 'pending' && livePendingList.length > 0
+      ? livePendingList
+      : withdrawalTransactions.filter((t) => t.status === activeTab);
 
-  const pendingCount = withdrawalTransactions.filter(
-    (t) => t.status === 'pending'
-  ).length;
+  const pendingCount =
+    livePendingList.length > 0
+      ? livePendingList.length
+      : withdrawalTransactions.filter((t) => t.status === 'pending').length;
 
   const handleOpenApprove = (txn: Transaction) => {
-    // Check available balance right now
-    const wallet = calculateUserWallet(txn.userId, transactions);
-    if (txn.amountPaise > wallet.availableBalancePaise) {
-      Alert.alert(
-        'Insufficient Balance',
-        `Cannot approve withdrawal. User's available balance is only ${formatPaiseToINR(
-          wallet.availableBalancePaise
-        )}, but requested amount is ${formatPaiseToINR(txn.amountPaise)}.`
-      );
-      return;
-    }
     setSelectedTxn(txn);
     setApproveModalVisible(true);
   };
@@ -91,6 +138,7 @@ export const WithdrawalRequestsScreen = () => {
     setApproveModalVisible(false);
 
     if (res.success) {
+      await Promise.all([refreshData(), fetchLivePending()]);
       Alert.alert(
         'Disbursed & Approved!',
         `Withdrawal ${selectedTxn.id} of ${formatPaiseToINR(
@@ -110,6 +158,7 @@ export const WithdrawalRequestsScreen = () => {
     setRejectModalVisible(false);
 
     if (res.success) {
+      await Promise.all([refreshData(), fetchLivePending()]);
       Alert.alert('Rejected', `Withdrawal ${selectedTxn.id} marked as rejected.`);
     } else {
       Alert.alert('Error', res.error || 'Failed to reject withdrawal.');
@@ -187,8 +236,13 @@ export const WithdrawalRequestsScreen = () => {
 
               // Compute real-time user wallet balance
               const userWallet = calculateUserWallet(item.userId, transactions);
-              const hasSufficientBalance =
-                userWallet.availableBalancePaise >= item.amountPaise;
+              const userBal =
+                item.userTotalBalancePaise ?? userWallet.availableBalancePaise;
+              const hasSufficientBalance = userBal >= item.amountPaise;
+              const eligibleCash =
+                item.eligibleWithdrawablePaise ??
+                item.withdrawablePaise ??
+                item.amountPaise;
 
               return (
                 <View key={item.id} style={styles.requestCard}>
@@ -213,7 +267,14 @@ export const WithdrawalRequestsScreen = () => {
                     </View>
 
                     <View style={styles.financialRow}>
-                      <Text style={styles.finLabel}>User's Available Balance</Text>
+                      <Text style={styles.finLabel}>Eligible Real Money</Text>
+                      <Text style={[styles.finValue, styles.withdrawableOk]}>
+                        {formatPaiseToINR(eligibleCash)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.financialRow}>
+                      <Text style={styles.finLabel}>User's Total Points</Text>
                       <Text
                         style={[
                           styles.finValue,
@@ -222,9 +283,30 @@ export const WithdrawalRequestsScreen = () => {
                             : styles.balanceWarning,
                         ]}
                       >
-                        {formatPaiseToINR(userWallet.availableBalancePaise)}
+                        {formatPaiseToINR(userBal)}
                       </Text>
                     </View>
+
+                    {item.isThresholdReached && (
+                      <View style={styles.thresholdNotice}>
+                        <Ionicons
+                          name="information-circle"
+                          size={14}
+                          color="#D97706"
+                        />
+                        <Text style={styles.thresholdNoticeText}>
+                          Threshold Rule Active (Limit:{' '}
+                          {formatPaiseToINR(
+                            item.userThresholdLimitPaise || 1000000
+                          )}
+                          ): Max payout capped at deposited principal (
+                          {formatPaiseToINR(
+                            item.totalDepositPrincipalPaise || 0
+                          )}
+                          ).
+                        </Text>
+                      </View>
+                    )}
 
                     {!hasSufficientBalance && item.status === 'pending' && (
                       <View style={styles.balanceWarningBox}>
@@ -326,13 +408,15 @@ export const WithdrawalRequestsScreen = () => {
         title="Authorize Withdrawal Payout?"
         message={
           selectedTxn
-            ? `Are you sure you want to approve withdrawal ${selectedTxn.id} for ${
-                selectedTxn.userName
-              }?\n\nPayout Amount: ${formatPaiseToINR(
+            ? `Approve payout for ${selectedTxn.userName}?\n\nPayout Amount: ${formatPaiseToINR(
                 selectedTxn.amountPaise
+              )}\nEligible Cash: ${formatPaiseToINR(
+                selectedTxn.eligibleWithdrawablePaise ??
+                  selectedTxn.withdrawablePaise ??
+                  selectedTxn.amountPaise
               )}\n\nThis will permanently deduct ${formatPaiseToINR(
                 selectedTxn.amountPaise
-              )} from their wallet balance.`
+              )} from their wallet points and record the payout.`
             : ''
         }
         confirmLabel="Authorize & Deduct"
@@ -451,6 +535,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: colors.danger,
+  },
+  withdrawableOk: {
+    color: '#059669',
+    fontWeight: '700',
+  },
+  thresholdNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FFFBEB',
+    padding: 8,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  thresholdNoticeText: {
+    fontSize: 11,
+    color: '#B45309',
+    flex: 1,
+    lineHeight: 15,
   },
   balanceOk: {
     color: colors.success,

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
   TextInput,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
+  Platform,
   TextInputProps,
   ViewStyle,
 } from 'react-native';
@@ -35,12 +37,14 @@ export const CustomInput: React.FC<CustomInputProps> = ({
 }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
+  const inputRef = useRef<any>(null);
 
   return (
     <View style={[styles.container, containerStyle]}>
       {label && <Text style={styles.label}>{label}</Text>}
 
-      <View
+      <Pressable
+        onPress={() => inputRef.current?.focus()}
         style={[
           styles.inputContainer,
           isFocused && styles.focusedInput,
@@ -58,12 +62,23 @@ export const CustomInput: React.FC<CustomInputProps> = ({
         )}
 
         <TextInput
-          style={[styles.input, props.multiline && styles.multilineInput]}
+          ref={inputRef}
           placeholderTextColor={colors.textLight}
           secureTextEntry={isPassword && !showPassword}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
           {...props}
+          style={[
+            styles.input,
+            props.multiline && styles.multilineInput,
+            props.style,
+          ]}
+          onFocus={(e) => {
+            setIsFocused(true);
+            props.onFocus?.(e);
+          }}
+          onBlur={(e) => {
+            setIsFocused(false);
+            props.onBlur?.(e);
+          }}
         />
 
         {isPassword ? (
@@ -86,7 +101,7 @@ export const CustomInput: React.FC<CustomInputProps> = ({
             <Ionicons name={rightIcon} size={20} color={colors.textMuted} />
           </TouchableOpacity>
         ) : null}
-      </View>
+      </Pressable>
 
       {error ? (
         <View style={styles.errorRow}>
@@ -144,8 +159,9 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     color: colors.text,
-    height: '100%',
-    padding: 0,
+    alignSelf: 'stretch',
+    paddingVertical: Platform.OS === 'ios' ? 12 : 6,
+    paddingHorizontal: 0,
   },
   multilineInput: {
     textAlignVertical: 'top',

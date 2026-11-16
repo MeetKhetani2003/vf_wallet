@@ -21,6 +21,9 @@ export interface User {
   bankAccount?: BankAccount;
   avatarUrl?: string;
   kycStatus?: 'verified' | 'pending' | 'unverified';
+  bonusPercentage?: number;
+  bonusThresholdLimitPaise?: number;
+  totalBalancePaise?: number;
 }
 
 export interface AdminUser {
@@ -70,6 +73,12 @@ export interface Transaction {
   bonusPercentage?: number; // Snapshot of bonus rate at deposit creation
   bonusPaise?: number; // Integer paise
   totalCreditPaise?: number; // amountPaise + bonusPaise for deposit
+  withdrawablePaise?: number; // Withdrawable amount
+  eligibleWithdrawablePaise?: number; // Calculated withdrawable real cash
+  isThresholdReached?: boolean; // True if user balance >= threshold limit
+  totalDepositPrincipalPaise?: number; // Total approved deposit principal
+  userTotalBalancePaise?: number; // User total balance in paise
+  userThresholdLimitPaise?: number; // User custom bonus threshold limit in paise
   paymentMethod?: string;
   upiId?: string;
   bankDetails?: BankAccount;
@@ -99,6 +108,11 @@ export interface UserWalletSummary {
   availableBalancePaise: number;
   pendingDepositCount: number;
   pendingWithdrawalCount: number;
+  withdrawablePaise?: number;
+  withdrawableRupees?: number;
+  isThresholdReached?: boolean;
+  bonusThresholdLimitPaise?: number;
+  bonusThresholdLimitRupees?: number;
 }
 
 export interface BonusConfig {

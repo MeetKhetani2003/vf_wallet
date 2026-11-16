@@ -19,6 +19,7 @@ import { TransactionDetailsScreen } from '../screens/user/TransactionDetailsScre
 
 export type AdminStackParamList = {
   AdminTabs: undefined;
+  AdminDashboard: undefined;
   UserDetails: { userId: string };
   BonusSettings: undefined;
   AdminTransactions: undefined;
@@ -142,6 +143,7 @@ export const AdminNavigator = () => {
       }}
     >
       <Stack.Screen name="AdminTabs" component={AdminTabNavigator} />
+      <Stack.Screen name="AdminDashboard" component={AdminTabNavigator} />
       <Stack.Screen name="ScreenshotVerification" component={ScreenshotVerificationScreen} />
       <Stack.Screen name="UserDetails" component={UserDetailsScreen} />
       <Stack.Screen name="BonusSettings" component={BonusSettingsScreen} />
