@@ -1,11 +1,419 @@
 import { Response } from 'express';
 import prisma from '../utils/prisma';
 import { AuthenticatedRequest } from '../middleware/auth';
-import { TransactionType, TransactionStatus } from '@prisma/client';
+import { Role, TransactionType, TransactionStatus } from '@prisma/client';
+import { isClientRole } from '../utils/permissions';
+
+/**
+ * POST /api/admin/clients/:clientId/deposit
+ * Auto-Accept Deposit for a selected Client (via OCR screenshot upload or manual entry).
+ * - Enforces granular employee permissions:
+ *     - OCR upload requires `canOcrUpload` (or Super Admin)
+ *     - Manual deposit requires `canDeposit` (or Super Admin)
+ * - Enforces Anti-Fraud Duplicate UTR & SHA-256 Image Hash checks (HTTP 409).
+ * - Atomically creates an APPROVED transaction and credits Principal + Custom Bonus to client.
+ */
+export const createClientDeposit = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const { clientId } = req.params;
+    const {
+      amountPaise,
+      amount,
+      utr,
+      imageHash,
+      imageUrl,
+      screenshotUri,
+      paymentApp,
+      rawOcrData,
+      submissionSource,
+      notes,
+    } = req.body;
+
+    const isOcrSubmission =
+      submissionSource === 'ocr' ||
+      submissionSource === 'gallery' ||
+      submissionSource === 'whatsapp_share' ||
+      Boolean(imageHash || imageUrl || screenshotUri);
+
+    // Granular Permission Check
+    if (!req.user.isSuperAdmin) {
+      if (isOcrSubmission && !req.user.permissions.canOcrUpload) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied: You do not have OCR Upload permission.',
+        });
+      }
+      if (!isOcrSubmission && !req.user.permissions.canDeposit) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied: You do not have Direct Deposit permission.',
+        });
+      }
+    }
+
+    // Parse positive integer amount in paise
+    let parsedAmountPaise = Number(amountPaise);
+    if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
+      if (amount !== undefined && !isNaN(Number(amount))) {
+        parsedAmountPaise = Math.round(Number(amount) * 100);
+      }
+    }
+
+    if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Deposit amount must be a positive value.',
+      });
+    }
+
+    // Validate Client account
+    const client = await prisma.user.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!client || !isClientRole(client.role)) {
+      return res.status(404).json({
+        success: false,
+        error: 'Target client account not found.',
+      });
+    }
+
+    if (client.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        error: `Client "${client.name}" is currently blocked and cannot receive deposits.`,
+      });
+    }
+
+    const cleanUtr =
+      utr && typeof utr === 'string' && utr.trim() ? utr.trim() : null;
+    const cleanImageHash =
+      imageHash && typeof imageHash === 'string' && imageHash.trim()
+        ? imageHash.trim()
+        : null;
+
+    // 1. Anti-fraud: Check duplicate screenshot hash
+    if (cleanImageHash) {
+      const existingHash = await prisma.transaction.findFirst({
+        where: {
+          imageHash: cleanImageHash,
+          status: { in: [TransactionStatus.PENDING, TransactionStatus.APPROVED] },
+        },
+      });
+
+      if (existingHash) {
+        return res.status(409).json({
+          success: false,
+          error: 'This payment screenshot has already been uploaded and processed.',
+          duplicateType: 'imageHash',
+          existingTransactionId: existingHash.id,
+        });
+      }
+    }
+
+    // 2. Anti-fraud: Check duplicate UTR reference
+    if (cleanUtr) {
+      const existingUtr = await prisma.transaction.findFirst({
+        where: {
+          utr: cleanUtr,
+          status: { in: [TransactionStatus.PENDING, TransactionStatus.APPROVED] },
+        },
+      });
+
+      if (existingUtr) {
+        return res.status(409).json({
+          success: false,
+          error: `Duplicate UTR detected: Transaction reference "${cleanUtr}" already exists.`,
+          duplicateType: 'utr',
+          existingTransactionId: existingUtr.id,
+        });
+      }
+    }
+
+    // 3. Calculate bonus based on Client's custom bonusPercentage
+    const bonusRate = client.bonusPercentage ?? 10.0;
+    const calculatedBonusPaise = Math.round((parsedAmountPaise * bonusRate) / 100);
+    const totalCreditPaise = parsedAmountPaise + calculatedBonusPaise;
+
+    // 4. AUTO-ACCEPT Atomic Transaction: Create APPROVED deposit & credit client immediately
+    const [transaction, updatedClient] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          userId: client.id,
+          type: TransactionType.DEPOSIT,
+          status: TransactionStatus.APPROVED,
+          amountPaise: parsedAmountPaise,
+          bonusPaise: calculatedBonusPaise,
+          withdrawablePaise: 0,
+          utr: cleanUtr,
+          imageHash: cleanImageHash,
+          imageUrl: imageUrl || screenshotUri || null,
+          paymentApp: paymentApp || (isOcrSubmission ? 'UPI OCR' : 'Direct Deposit'),
+          rawOcrData: rawOcrData
+            ? { ...(typeof rawOcrData === 'object' ? rawOcrData : {}), notes: notes || undefined }
+            : notes
+            ? { notes }
+            : undefined,
+          processedByAdminId: req.user.userId,
+          processedByName: req.user.name,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              email: true,
+              bonusPercentage: true,
+              bonusThresholdLimitPaise: true,
+              totalBalancePaise: true,
+            },
+          },
+        },
+      }),
+      prisma.user.update({
+        where: { id: client.id },
+        data: {
+          totalBalancePaise: {
+            increment: totalCreditPaise,
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          totalBalancePaise: true,
+        },
+      }),
+    ]);
+
+    return res.status(201).json({
+      success: true,
+      message: `Deposit auto-accepted! Credited ₹${(totalCreditPaise / 100).toFixed(
+        2
+      )} (Principal: ₹${(parsedAmountPaise / 100).toFixed(2)} + ${bonusRate}% Bonus: ₹${(
+        calculatedBonusPaise / 100
+      ).toFixed(2)}) to ${updatedClient.name}.`,
+      transaction: {
+        ...transaction,
+        bonusPercentage: bonusRate,
+        totalCreditPaise,
+      },
+      creditedTotalPaise: totalCreditPaise,
+      clientNewBalancePaise: updatedClient.totalBalancePaise,
+    });
+  } catch (error: any) {
+    console.error('Error in createClientDeposit:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process client deposit.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/clients/:clientId/withdraw
+ * Auto-Accept Rule-Based Withdrawal for a selected Client.
+ * - Requires `canWithdraw` permission (or Super Admin).
+ * - Enforces Threshold Rule:
+ *     If client.totalBalancePaise >= client.bonusThresholdLimitPaise:
+ *       withdrawablePaise = min(client.totalBalancePaise, totalDepositPrincipalPaise)
+ *     Else:
+ *       withdrawablePaise = client.totalBalancePaise
+ * - Atomically creates an APPROVED withdrawal and debits client's balance immediately.
+ */
+export const createClientWithdrawal = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    if (!req.user.isSuperAdmin && !req.user.permissions.canWithdraw) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: You do not have Withdrawal permission.',
+      });
+    }
+
+    const { clientId } = req.params;
+    const {
+      amountPaise,
+      amount,
+      paymentApp,
+      paymentMethod,
+      upiId,
+      bankDetails,
+      notes,
+    } = req.body;
+
+    let parsedAmountPaise = Number(amountPaise);
+    if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
+      if (amount !== undefined && !isNaN(Number(amount))) {
+        parsedAmountPaise = Math.round(Number(amount) * 100);
+      }
+    }
+
+    if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Withdrawal amount must be a positive value.',
+      });
+    }
+
+    const client = await prisma.user.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!client || !isClientRole(client.role)) {
+      return res.status(404).json({
+        success: false,
+        error: 'Target client account not found.',
+      });
+    }
+
+    if (client.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        error: `Client "${client.name}" is currently blocked and cannot withdraw funds.`,
+      });
+    }
+
+    // 1. Check total balance sufficiency
+    if (client.totalBalancePaise < parsedAmountPaise) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient balance for ${client.name}. Available: ₹${(
+          client.totalBalancePaise / 100
+        ).toFixed(2)}, Requested: ₹${(parsedAmountPaise / 100).toFixed(2)}.`,
+      });
+    }
+
+    // 2. Compute total approved deposit principal
+    const depositAggregate = await prisma.transaction.aggregate({
+      where: {
+        userId: client.id,
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.APPROVED,
+      },
+      _sum: { amountPaise: true },
+    });
+    const totalDepositPrincipalPaise = depositAggregate._sum.amountPaise || 0;
+
+    // 3. Rule-Based Threshold Enforcement
+    const isThresholdReached =
+      client.totalBalancePaise >= client.bonusThresholdLimitPaise;
+    const maxWithdrawablePaise = isThresholdReached
+      ? Math.min(client.totalBalancePaise, totalDepositPrincipalPaise)
+      : client.totalBalancePaise;
+
+    if (parsedAmountPaise > maxWithdrawablePaise) {
+      return res.status(400).json({
+        success: false,
+        error: `Requested withdrawal ₹${(parsedAmountPaise / 100).toFixed(
+          2
+        )} exceeds ${client.name}'s eligible withdrawable cash limit of ₹${(
+          maxWithdrawablePaise / 100
+        ).toFixed(2)}. Because total balance (₹${(
+          client.totalBalancePaise / 100
+        ).toFixed(2)}) reached/exceeded threshold limit (₹${(
+          client.bonusThresholdLimitPaise / 100
+        ).toFixed(2)}), bonus points are excluded.`,
+        isThresholdReached,
+        maxWithdrawablePaise,
+        totalDepositPrincipalPaise,
+      });
+    }
+
+    const paymentAppStr = upiId
+      ? `UPI: ${upiId}`
+      : bankDetails?.accountNumber
+      ? `Bank: ${bankDetails.bankName || 'A/C'} (${bankDetails.accountNumber})`
+      : paymentApp || paymentMethod || 'Direct Payout';
+
+    const rawData = {
+      ...(bankDetails || {}),
+      upiId: upiId || null,
+      notes: notes || null,
+    };
+
+    // 4. AUTO-ACCEPT Atomic Transaction: Create APPROVED withdrawal & debit client balance
+    const [transaction, updatedClient] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          userId: client.id,
+          type: TransactionType.WITHDRAWAL,
+          status: TransactionStatus.APPROVED,
+          amountPaise: parsedAmountPaise,
+          bonusPaise: 0,
+          withdrawablePaise: maxWithdrawablePaise,
+          paymentApp: paymentAppStr,
+          rejectionReason: notes || null,
+          rawOcrData: rawData,
+          processedByAdminId: req.user.userId,
+          processedByName: req.user.name,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              email: true,
+              bonusPercentage: true,
+              bonusThresholdLimitPaise: true,
+              totalBalancePaise: true,
+            },
+          },
+        },
+      }),
+      prisma.user.update({
+        where: { id: client.id },
+        data: {
+          totalBalancePaise: {
+            decrement: parsedAmountPaise,
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          totalBalancePaise: true,
+        },
+      }),
+    ]);
+
+    return res.status(201).json({
+      success: true,
+      message: `Payout auto-accepted! Debited ₹${(parsedAmountPaise / 100).toFixed(
+        2
+      )} from ${updatedClient.name}. New balance: ₹${(
+        updatedClient.totalBalancePaise / 100
+      ).toFixed(2)}.`,
+      transaction,
+      clientNewBalancePaise: updatedClient.totalBalancePaise,
+      withdrawablePaise: maxWithdrawablePaise,
+      isThresholdReached,
+    });
+  } catch (error: any) {
+    console.error('Error in createClientWithdrawal:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process client withdrawal.',
+    });
+  }
+};
 
 /**
  * GET /api/admin/transactions
- * Returns master list of transactions with filtering (status, type, search, pagination).
+ * Returns master ledger of transactions with filtering (status, type, userId, search, pagination).
  */
 export const getAllTransactions = async (
   req: AuthenticatedRequest,
@@ -16,7 +424,10 @@ export const getAllTransactions = async (
 
     const whereClause: any = {};
 
-    if (status && (status === 'PENDING' || status === 'APPROVED' || status === 'REJECTED')) {
+    if (
+      status &&
+      (status === 'PENDING' || status === 'APPROVED' || status === 'REJECTED')
+    ) {
       whereClause.status = status as TransactionStatus;
     }
 
@@ -33,6 +444,7 @@ export const getAllTransactions = async (
       whereClause.OR = [
         { utr: { contains: q, mode: 'insensitive' } },
         { paymentApp: { contains: q, mode: 'insensitive' } },
+        { processedByName: { contains: q, mode: 'insensitive' } },
         { user: { name: { contains: q, mode: 'insensitive' } } },
         { user: { phone: { contains: q } } },
       ];
@@ -73,7 +485,8 @@ export const getAllTransactions = async (
       totalPages: Math.ceil(total / limitNum),
       transactions: transactions.map((t) => ({
         ...t,
-        totalCreditPaise: t.type === 'DEPOSIT' ? t.amountPaise + t.bonusPaise : undefined,
+        totalCreditPaise:
+          t.type === 'DEPOSIT' ? t.amountPaise + t.bonusPaise : undefined,
       })),
     });
   } catch (error: any) {
@@ -86,310 +499,22 @@ export const getAllTransactions = async (
 };
 
 /**
- * PATCH /api/admin/transactions/:id/approve-deposit
- * Approves a pending deposit.
- * Atomically credits the user's wallet: amountPaise + bonusPaise.
- */
-export const approveDeposit = async (
-  req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const adminId = req.user?.userId;
-    const { id } = req.params;
-
-    const transaction = await prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!transaction) {
-      return res.status(404).json({ success: false, error: 'Transaction not found.' });
-    }
-
-    if (transaction.type !== TransactionType.DEPOSIT) {
-      return res.status(400).json({
-        success: false,
-        error: 'Only DEPOSIT transactions can be approved through this endpoint.',
-      });
-    }
-
-    if (transaction.status !== TransactionStatus.PENDING) {
-      return res.status(400).json({
-        success: false,
-        error: `Transaction is already ${transaction.status}.`,
-      });
-    }
-
-    const totalCredit = transaction.amountPaise + transaction.bonusPaise;
-
-    // Atomic execution: update status + increment user balance
-    const [updatedTxn, updatedUser] = await prisma.$transaction([
-      prisma.transaction.update({
-        where: { id },
-        data: {
-          status: TransactionStatus.APPROVED,
-          processedByAdminId: adminId || null,
-        },
-      }),
-      prisma.user.update({
-        where: { id: transaction.userId },
-        data: {
-          totalBalancePaise: {
-            increment: totalCredit,
-          },
-        },
-        select: {
-          id: true,
-          name: true,
-          totalBalancePaise: true,
-        },
-      }),
-    ]);
-
-    return res.status(200).json({
-      success: true,
-      message: `Deposit approved. Credited ₹${(totalCredit / 100).toFixed(2)} (Principal: ₹${(
-        transaction.amountPaise / 100
-      ).toFixed(2)}, Bonus: ₹${(transaction.bonusPaise / 100).toFixed(2)}) to ${
-        updatedUser.name
-      }.`,
-      transaction: updatedTxn,
-      creditedTotalPaise: totalCredit,
-      userNewBalancePaise: updatedUser.totalBalancePaise,
-    });
-  } catch (error: any) {
-    console.error('Error approving deposit:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to approve deposit transaction.',
-    });
-  }
-};
-
-/**
- * PATCH /api/admin/transactions/:id/reject-deposit
- * Rejects a pending deposit with an explanation reason.
- * Does not alter wallet balance.
- */
-export const rejectDeposit = async (
-  req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const adminId = req.user?.userId;
-    const { id } = req.params;
-    const { rejectionReason } = req.body;
-
-    const transaction = await prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!transaction) {
-      return res.status(404).json({ success: false, error: 'Transaction not found.' });
-    }
-
-    if (transaction.type !== TransactionType.DEPOSIT) {
-      return res.status(400).json({
-        success: false,
-        error: 'Only DEPOSIT transactions can be rejected through this endpoint.',
-      });
-    }
-
-    if (transaction.status !== TransactionStatus.PENDING) {
-      return res.status(400).json({
-        success: false,
-        error: `Transaction is already ${transaction.status}.`,
-      });
-    }
-
-    const updatedTxn = await prisma.transaction.update({
-      where: { id },
-      data: {
-        status: TransactionStatus.REJECTED,
-        rejectionReason: rejectionReason || 'Deposit verification failed.',
-        processedByAdminId: adminId || null,
-      },
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: 'Deposit request has been rejected.',
-      transaction: updatedTxn,
-    });
-  } catch (error: any) {
-    console.error('Error rejecting deposit:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to reject deposit.',
-    });
-  }
-};
-
-/**
- * PATCH /api/admin/transactions/:id/approve-withdrawal
- * Verifies live balance, approves withdrawal, and atomically debits wallet.
- */
-export const approveWithdrawal = async (
-  req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const adminId = req.user?.userId;
-    const { id } = req.params;
-
-    const transaction = await prisma.transaction.findUnique({
-      where: { id },
-      include: { user: true },
-    });
-
-    if (!transaction) {
-      return res.status(404).json({ success: false, error: 'Transaction not found.' });
-    }
-
-    if (transaction.type !== TransactionType.WITHDRAWAL) {
-      return res.status(400).json({
-        success: false,
-        error: 'Only WITHDRAWAL transactions can be approved through this endpoint.',
-      });
-    }
-
-    if (transaction.status !== TransactionStatus.PENDING) {
-      return res.status(400).json({
-        success: false,
-        error: `Transaction is already ${transaction.status}.`,
-      });
-    }
-
-    // Re-verify current live balance
-    if (transaction.user.totalBalancePaise < transaction.amountPaise) {
-      return res.status(400).json({
-        success: false,
-        error: `Cannot approve withdrawal. User available balance (₹${(
-          transaction.user.totalBalancePaise / 100
-        ).toFixed(2)}) is less than requested withdrawal (₹${(
-          transaction.amountPaise / 100
-        ).toFixed(2)}).`,
-      });
-    }
-
-    // Atomic execution: update status + decrement user balance
-    const [updatedTxn, updatedUser] = await prisma.$transaction([
-      prisma.transaction.update({
-        where: { id },
-        data: {
-          status: TransactionStatus.APPROVED,
-          processedByAdminId: adminId || null,
-        },
-      }),
-      prisma.user.update({
-        where: { id: transaction.userId },
-        data: {
-          totalBalancePaise: {
-            decrement: transaction.amountPaise,
-          },
-        },
-        select: {
-          id: true,
-          name: true,
-          totalBalancePaise: true,
-        },
-      }),
-    ]);
-
-    return res.status(200).json({
-      success: true,
-      message: `Withdrawal approved. Debited ₹${(
-        transaction.amountPaise / 100
-      ).toFixed(2)} from ${updatedUser.name}.`,
-      transaction: updatedTxn,
-      userNewBalancePaise: updatedUser.totalBalancePaise,
-    });
-  } catch (error: any) {
-    console.error('Error approving withdrawal:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to approve withdrawal.',
-    });
-  }
-};
-
-/**
- * PATCH /api/admin/transactions/:id/reject-withdrawal
- * Rejects a withdrawal request. No balance is deducted.
- */
-export const rejectWithdrawal = async (
-  req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const adminId = req.user?.userId;
-    const { id } = req.params;
-    const { rejectionReason } = req.body;
-
-    const transaction = await prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!transaction) {
-      return res.status(404).json({ success: false, error: 'Transaction not found.' });
-    }
-
-    if (transaction.type !== TransactionType.WITHDRAWAL) {
-      return res.status(400).json({
-        success: false,
-        error: 'Only WITHDRAWAL transactions can be rejected through this endpoint.',
-      });
-    }
-
-    if (transaction.status !== TransactionStatus.PENDING) {
-      return res.status(400).json({
-        success: false,
-        error: `Transaction is already ${transaction.status}.`,
-      });
-    }
-
-    const updatedTxn = await prisma.transaction.update({
-      where: { id },
-      data: {
-        status: TransactionStatus.REJECTED,
-        rejectionReason: rejectionReason || 'Withdrawal rejected by administrator.',
-        processedByAdminId: adminId || null,
-      },
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: 'Withdrawal request has been rejected.',
-      transaction: updatedTxn,
-    });
-  } catch (error: any) {
-    console.error('Error rejecting withdrawal:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to reject withdrawal.',
-    });
-  }
-};
-
-/**
  * GET /api/admin/stats
- * Platform KPI metrics for Admin Dashboard.
+ * Clean Operational KPI Metrics for Dashboard (Auto-Accept System).
+ * Per specification: NO Liability Wallet and NO Pending Approval Request Queues.
  */
 export const getAdminStats = async (
   _req: AuthenticatedRequest,
   res: Response
 ) => {
   try {
-    const [totalUsers, users, transactions] = await Promise.all([
-      prisma.user.count({ where: { role: 'USER' } }),
-      prisma.user.findMany({
-        where: { role: 'USER' },
-        select: { totalBalancePaise: true },
-      }),
+    const [totalClients, totalEmployees, transactions] = await Promise.all([
+      prisma.user.count({ where: { role: { in: [Role.CLIENT, Role.USER] } } }),
+      prisma.user.count({ where: { role: Role.EMPLOYEE } }),
       prisma.transaction.findMany({
+        where: { status: TransactionStatus.APPROVED },
         select: {
           type: true,
-          status: true,
           amountPaise: true,
           bonusPaise: true,
         },
@@ -399,184 +524,38 @@ export const getAdminStats = async (
     let totalApprovedDepositsPaise = 0;
     let totalApprovedWithdrawalsPaise = 0;
     let totalBonusGivenPaise = 0;
-    let pendingDepositRequestsCount = 0;
-    let pendingWithdrawalRequestsCount = 0;
 
     for (const txn of transactions) {
       if (txn.type === TransactionType.DEPOSIT) {
-        if (txn.status === TransactionStatus.APPROVED) {
-          totalApprovedDepositsPaise += txn.amountPaise;
-          totalBonusGivenPaise += txn.bonusPaise;
-        } else if (txn.status === TransactionStatus.PENDING) {
-          pendingDepositRequestsCount += 1;
-        }
+        totalApprovedDepositsPaise += txn.amountPaise;
+        totalBonusGivenPaise += txn.bonusPaise;
       } else if (txn.type === TransactionType.WITHDRAWAL) {
-        if (txn.status === TransactionStatus.APPROVED) {
-          totalApprovedWithdrawalsPaise += txn.amountPaise;
-        } else if (txn.status === TransactionStatus.PENDING) {
-          pendingWithdrawalRequestsCount += 1;
-        }
-      } else if (txn.type === TransactionType.BONUS && txn.status === TransactionStatus.APPROVED) {
+        totalApprovedWithdrawalsPaise += txn.amountPaise;
+      } else if (txn.type === TransactionType.BONUS) {
         totalBonusGivenPaise += txn.amountPaise;
       }
     }
 
-    const totalWalletLiabilityPaise = users.reduce(
-      (sum, u) => sum + u.totalBalancePaise,
-      0
-    );
-
     return res.status(200).json({
       success: true,
       stats: {
-        totalUsers,
+        totalClients,
+        totalEmployees,
+        totalUsers: totalClients,
+        totalTransactionsCount: transactions.length,
         totalApprovedDepositsPaise,
         totalApprovedDepositsRupees: totalApprovedDepositsPaise / 100,
         totalApprovedWithdrawalsPaise,
         totalApprovedWithdrawalsRupees: totalApprovedWithdrawalsPaise / 100,
         totalBonusGivenPaise,
         totalBonusGivenRupees: totalBonusGivenPaise / 100,
-        totalWalletLiabilityPaise,
-        totalWalletLiabilityRupees: totalWalletLiabilityPaise / 100,
-        pendingDepositRequestsCount,
-        pendingWithdrawalRequestsCount,
       },
     });
   } catch (error: any) {
     console.error('Error fetching admin stats:', error);
     return res.status(500).json({
       success: false,
-      error: 'Failed to retrieve administrative statistics.',
+      error: 'Failed to retrieve operational statistics.',
     });
   }
 };
-
-/**
- * GET /api/admin/pending-deposits
- * Returns pending deposits awaiting screenshot verification, including user details.
- */
-export const getPendingDeposits = async (
-  _req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const transactions = await prisma.transaction.findMany({
-      where: {
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.PENDING,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            email: true,
-            bonusPercentage: true,
-            bonusThresholdLimitPaise: true,
-            isBlocked: true,
-            totalBalancePaise: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    return res.status(200).json({
-      success: true,
-      total: transactions.length,
-      transactions: transactions.map((t) => ({
-        ...t,
-        totalCreditPaise: t.amountPaise + t.bonusPaise,
-      })),
-    });
-  } catch (error: any) {
-    console.error('Error fetching pending deposits:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve pending deposits.',
-    });
-  }
-};
-
-/**
- * GET /api/admin/pending-withdrawals
- * Returns all PENDING withdrawal requests with user profile details,
- * calculated total deposit principal, and eligible withdrawable cash.
- */
-export const getPendingWithdrawals = async (
-  _req: AuthenticatedRequest,
-  res: Response
-) => {
-  try {
-    const transactions = await prisma.transaction.findMany({
-      where: {
-        type: TransactionType.WITHDRAWAL,
-        status: TransactionStatus.PENDING,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            email: true,
-            bonusPercentage: true,
-            bonusThresholdLimitPaise: true,
-            isBlocked: true,
-            totalBalancePaise: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const userIds = Array.from(new Set(transactions.map((t) => t.userId)));
-    const depositSums = await prisma.transaction.groupBy({
-      by: ['userId'],
-      where: {
-        userId: { in: userIds },
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.APPROVED,
-      },
-      _sum: {
-        amountPaise: true,
-      },
-    });
-
-    const depositMap = new Map<string, number>();
-    for (const d of depositSums) {
-      depositMap.set(d.userId, d._sum.amountPaise || 0);
-    }
-
-    const enrichedTransactions = transactions.map((t) => {
-      const userTotalDeposit = depositMap.get(t.userId) || 0;
-      const userBal = t.user.totalBalancePaise;
-      const userLimit = t.user.bonusThresholdLimitPaise;
-      const isThresholdReached = userBal >= userLimit;
-      const eligibleWithdrawablePaise = isThresholdReached
-        ? Math.min(userBal, userTotalDeposit)
-        : userBal;
-
-      return {
-        ...t,
-        totalDepositPrincipalPaise: userTotalDeposit,
-        isThresholdReached,
-        eligibleWithdrawablePaise,
-      };
-    });
-
-    return res.status(200).json({
-      success: true,
-      total: enrichedTransactions.length,
-      transactions: enrichedTransactions,
-    });
-  } catch (error: any) {
-    console.error('Error fetching pending withdrawals:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve pending withdrawals.',
-    });
-  }
-};
-

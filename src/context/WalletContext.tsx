@@ -194,35 +194,52 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({
             setUserWallet(localWallet);
           }
         } else if (user.role === 'admin') {
-          // 1. Fetch live platform transactions from GET /api/admin/transactions
-          const txnsRes = await adminApi.getAllTransactions();
+          // 1. Fetch live platform transactions, operational stats, and client roster in parallel
+          const [txnsRes, statsRes, clientsRes] = await Promise.all([
+            adminApi.getAllTransactions(),
+            adminApi.getAdminStats(),
+            adminApi.getUsers({ role: 'CLIENT' }),
+          ]);
+
           if (txnsRes.success && Array.isArray(txnsRes.transactions)) {
             setTransactions(txnsRes.transactions.map(mapBackendTxn));
-          } else {
-            const localTxns = await storageService.getTransactions();
-            setTransactions(localTxns);
           }
 
-          // 2. Fetch live platform admin stats from GET /api/admin/stats
-          const statsRes = await adminApi.getAdminStats();
           if (statsRes.success && statsRes.stats) {
             setAdminStats(statsRes.stats);
-          } else {
-            const localStats = await mockWalletService.getAdminStats();
-            setAdminStats(localStats);
+          }
+
+          if (clientsRes.success && Array.isArray(clientsRes.users)) {
+            const mappedClients: User[] = clientsRes.users.map((u: any) => ({
+              id: u.id,
+              name: u.name,
+              phone: u.phone,
+              email: u.email || '',
+              role: 'user',
+              accountType: u.accountType || 'CLIENT',
+              status: u.isBlocked ? 'blocked' : 'active',
+              createdAt: u.createdAt,
+              upiId: u.upiId || undefined,
+              bankAccount: u.bankAccount || undefined,
+              bonusPercentage: u.bonusPercentage ?? 10.0,
+              bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+              totalBalancePaise: u.totalBalancePaise || 0,
+              totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
+              withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
+              isThresholdReached: Boolean(u.isThresholdReached),
+            }));
+            setUsers(mappedClients);
           }
         }
       } else {
-        const localTxns = await storageService.getTransactions();
-        setTransactions(localTxns);
+        setTransactions([]);
+        setUsers([]);
       }
 
-      const [allUsers, config, notifs] = await Promise.all([
-        storageService.getUsers(),
+      const [config, notifs] = await Promise.all([
         storageService.getBonusConfig(),
         storageService.getNotifications(),
       ]);
-      setUsers(allUsers);
       setBonusConfig(config);
       setNotifications(notifs);
     } catch (e) {

@@ -20,7 +20,7 @@ import { useWallet } from '../../hooks/useWallet';
 
 export const AdminProfileScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { user, logout, updateProfile, refreshSession } = useAuth();
+  const { user, isSuperAdmin, logout, updateProfile, refreshSession } = useAuth();
   const { adminStats, refreshData } = useWallet();
 
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
@@ -111,33 +111,35 @@ export const AdminProfileScreen = () => {
           <Text style={styles.cardHeading}>System Overview</Text>
 
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Platform Status</Text>
+            <Text style={styles.infoLabel}>Processing Mode</Text>
             <View style={styles.statusPill}>
               <View style={styles.greenDot} />
-              <Text style={styles.statusPillText}>Operational (Neon Cloud)</Text>
+              <Text style={styles.statusPillText}>Auto-Accept Active</Text>
             </View>
           </View>
 
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Registered Users</Text>
+            <Text style={styles.infoLabel}>Managed Clients</Text>
             <Text style={styles.infoValue}>
-              {adminStats?.totalUsers || 0} Accounts
+              {adminStats?.totalClients ?? adminStats?.totalUsers ?? 0} Clients
             </Text>
           </View>
 
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Pending Approvals</Text>
-            <Text style={styles.infoValue}>
-              {(adminStats?.pendingDepositRequestsCount || 0) +
-                (adminStats?.pendingWithdrawalRequestsCount || 0)}{' '}
-              Items
-            </Text>
-          </View>
+          {isSuperAdmin && (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Staff Employees</Text>
+              <Text style={styles.infoValue}>
+                {adminStats?.totalEmployees || 0} Staff
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Administration Actions */}
         <View style={styles.card}>
-          <Text style={styles.cardHeading}>Administrative Controls</Text>
+          <Text style={styles.cardHeading}>
+            {isSuperAdmin ? 'Administrative Controls' : 'Account Controls'}
+          </Text>
 
           <TouchableOpacity
             style={styles.menuItem}
@@ -148,40 +150,40 @@ export const AdminProfileScreen = () => {
               <View style={[styles.menuIconCircle, { backgroundColor: colors.lightBlue }]}>
                 <Ionicons name="person-outline" size={18} color={colors.primary} />
               </View>
-              <Text style={styles.menuItemText}>Edit Administrator Profile</Text>
+              <Text style={styles.menuItemText}>Edit My Profile</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.menuItem}
-            onPress={() => navigation.navigate('BonusSettings')}
+            onPress={() => navigation.navigate('AdminTransactions')}
             activeOpacity={0.7}
           >
             <View style={styles.menuItemLeft}>
-              <View style={[styles.menuIconCircle, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="gift-outline" size={18} color="#D97706" />
+              <View style={[styles.menuIconCircle, { backgroundColor: '#DCFCE7' }]}>
+                <Ionicons name="receipt-outline" size={18} color="#15803D" />
               </View>
-              <Text style={styles.menuItemText}>Configure Cashback Bonus</Text>
+              <Text style={styles.menuItemText}>Master Transaction Ledger</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.menuItem}
-            onPress={() => navigation.navigate('ResetData')}
-            activeOpacity={0.7}
-          >
-            <View style={styles.menuItemLeft}>
-              <View style={[styles.menuIconCircle, { backgroundColor: colors.dangerLight }]}>
-                <Ionicons name="trash-outline" size={18} color={colors.danger} />
+          {isSuperAdmin && (
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate('Users', { initialTab: 'EMPLOYEE' })}
+              activeOpacity={0.7}
+            >
+              <View style={styles.menuItemLeft}>
+                <View style={[styles.menuIconCircle, { backgroundColor: '#EDE9FE' }]}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color="#7C3AED" />
+                </View>
+                <Text style={styles.menuItemText}>Manage Employees & Permissions</Text>
               </View>
-              <Text style={[styles.menuItemText, { color: colors.danger }]}>
-                Reset Application Data (Danger Zone)
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
-          </TouchableOpacity>
+              <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             style={styles.menuItem}

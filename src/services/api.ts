@@ -33,46 +33,12 @@ export const setApiBaseUrl = (url: string) => {
 export const getApiBaseUrl = () => activeBaseUrl;
 
 /**
- * Token management helpers with automatic token recovery
+ * Strict JWT token storage helpers (no silent auto-login)
  */
 export const tokenStorage = {
   async getToken(): Promise<string | null> {
     try {
-      const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
-      if (token) return token;
-
-      // Auto-recovery: If active user is logged in as an Admin in storage,
-      // silently obtain a fresh JWT token from the backend
-      const storedUserRaw = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_USER);
-      if (storedUserRaw) {
-        const storedUser = JSON.parse(storedUserRaw);
-        if (storedUser && storedUser.role === 'admin') {
-          const email = storedUser.email || 'admin@vfwallet.com';
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4000);
-            const loginRes = await fetch(`${activeBaseUrl}/auth/login`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ identifier: email, password: 'admin123' }),
-              signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
-
-            if (loginRes.ok) {
-              const data = await loginRes.json();
-              if (data?.token) {
-                await AsyncStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, data.token);
-                return data.token;
-              }
-            }
-          } catch {
-            // Backend offline or unreachable
-          }
-        }
-      }
-
-      return null;
+      return await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
     } catch {
       return null;
     }
@@ -111,13 +77,14 @@ export interface ApiResponse<T = any> {
  */
 async function request<T = any>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit & { timeoutMs?: number } = {}
 ): Promise<ApiResponse<T>> {
   const url = endpoint.startsWith('http') ? endpoint : `${activeBaseUrl}${endpoint}`;
+  const { timeoutMs = 15000, ...fetchOptions } = options;
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
+    ...((fetchOptions.headers as Record<string, string>) || {}),
   };
 
   // Interceptor: Attach JWT token from AsyncStorage / auto-recovery
@@ -128,10 +95,10 @@ async function request<T = any>(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       headers,
       signal: controller.signal,
     });
@@ -234,11 +201,105 @@ export const adminApi = {
   async createUser(data: {
     name: string;
     phone: string;
+    email?: string;
     password?: string;
+    userType?: 'CLIENT' | 'EMPLOYEE';
+    role?: 'CLIENT' | 'EMPLOYEE';
+    permissions?: {
+      canOcrUpload: boolean;
+      canDeposit: boolean;
+      canWithdraw: boolean;
+      canSetBonus: boolean;
+      canSetThreshold: boolean;
+      canManageClients: boolean;
+    };
+    upiId?: string;
+    bankAccount?: {
+      accountNumber: string;
+      ifsc: string;
+      bankName: string;
+      accountHolderName: string;
+    } | null;
     bonusPercentage?: number;
     bonusThresholdLimit?: number;
   }) {
     return apiClient.post('/admin/users/create', data);
+  },
+
+  async updateUser(
+    userId: string,
+    data: {
+      name?: string;
+      phone?: string;
+      email?: string;
+      upiId?: string;
+      bankAccount?: {
+        accountNumber: string;
+        ifsc: string;
+        bankName: string;
+        accountHolderName: string;
+      } | null;
+      password?: string;
+    }
+  ) {
+    return apiClient.patch(`/admin/users/${userId}`, data);
+  },
+
+  async updateEmployeePermissions(
+    userId: string,
+    permissions: {
+      canOcrUpload: boolean;
+      canDeposit: boolean;
+      canWithdraw: boolean;
+      canSetBonus: boolean;
+      canSetThreshold: boolean;
+      canManageClients: boolean;
+    },
+    password?: string
+  ) {
+    return apiClient.patch(`/admin/users/${userId}/permissions`, {
+      permissions,
+      ...(password ? { password } : {}),
+    });
+  },
+
+  async scanReceiptOcr(base64: string, mimeType?: string) {
+    return request('/admin/ocr/scan', {
+      method: 'POST',
+      body: JSON.stringify({ base64, mimeType }),
+      timeoutMs: 30000,
+    });
+  },
+
+  async createClientDeposit(
+    clientId: string,
+    data: {
+      amountPaise: number;
+      utr?: string;
+      imageHash?: string;
+      imageUrl?: string;
+      screenshotUri?: string;
+      paymentApp?: string;
+      rawOcrData?: any;
+      submissionSource?: 'ocr' | 'manual' | 'gallery' | 'whatsapp_share';
+      notes?: string;
+    }
+  ) {
+    return apiClient.post(`/admin/clients/${clientId}/deposit`, data);
+  },
+
+  async createClientWithdrawal(
+    clientId: string,
+    data: {
+      amountPaise: number;
+      paymentApp?: string;
+      paymentMethod?: string;
+      upiId?: string;
+      bankDetails?: any;
+      notes?: string;
+    }
+  ) {
+    return apiClient.post(`/admin/clients/${clientId}/withdraw`, data);
   },
 
   async getUsers(params?: {

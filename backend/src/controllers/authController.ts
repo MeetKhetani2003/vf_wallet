@@ -3,6 +3,11 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../utils/prisma';
 import { AuthenticatedRequest, JwtPayload } from '../middleware/auth';
+import {
+  resolveUserPermissions,
+  isSuperAdminRole,
+  isStaffRole,
+} from '../utils/permissions';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'vf_wallet_super_secret_jwt_key_2026';
 
@@ -10,11 +15,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'vf_wallet_super_secret_jwt_key_202
  * Generates a signed JWT token.
  */
 export const generateToken = (payload: JwtPayload): string => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
 };
 
 /**
- * Formats a Prisma User into a client-safe response object
+ * Formats a Prisma User into a client-safe response object with resolved permissions.
  */
 const formatUserResponse = (user: any) => {
   return {
@@ -23,6 +28,8 @@ const formatUserResponse = (user: any) => {
     phone: user.phone,
     email: user.email,
     role: user.role,
+    isSuperAdmin: isSuperAdminRole(user.role),
+    permissions: resolveUserPermissions(user.role, user.permissions),
     isBlocked: user.isBlocked,
     bonusPercentage: user.bonusPercentage,
     bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
@@ -44,8 +51,8 @@ const formatUserResponse = (user: any) => {
 
 /**
  * POST /api/auth/login
- * Validates phone or email and password with bcryptjs.
- * Returns JWT token and complete user object.
+ * Authenticates ONLY Staff accounts (SUPER_ADMIN, ADMIN, EMPLOYEE).
+ * CLIENT accounts do not have login access.
  */
 export const login = async (req: Request, res: Response) => {
   try {
@@ -83,6 +90,22 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
+    // Clients do not have login access — only Employees & Super Admin
+    if (!isStaffRole(user.role)) {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Client accounts do not have login access. Please sign in with an Employee or Super Admin account.',
+      });
+    }
+
+    if (!user.passwordHash) {
+      return res.status(401).json({
+        success: false,
+        error: 'Login credentials are not configured for this account.',
+      });
+    }
+
     // Verify password hash
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
@@ -96,7 +119,8 @@ export const login = async (req: Request, res: Response) => {
     if (user.isBlocked) {
       return res.status(403).json({
         success: false,
-        error: 'Your account has been suspended by an administrator. Please contact support.',
+        error:
+          'Your account has been suspended by an administrator. Please contact support.',
       });
     }
 
@@ -125,7 +149,7 @@ export const login = async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Returns current authenticated user profile and wallet balance details.
+ * Returns current authenticated staff profile and resolved permissions.
  */
 export const getMe = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -172,8 +196,7 @@ export const getMe = async (req: AuthenticatedRequest, res: Response) => {
 
 /**
  * PATCH /api/auth/profile
- * Updates the authenticated user's profile details:
- * name, email, phone, upiId, bankAccount, avatarUrl
+ * Updates the authenticated user's own profile details.
  */
 export const updateProfile = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -224,7 +247,10 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
     }
 
     if (email !== undefined) {
-      const cleanEmail = email && typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
+      const cleanEmail =
+        email && typeof email === 'string' && email.trim()
+          ? email.trim().toLowerCase()
+          : null;
       if (cleanEmail && cleanEmail !== currentUser.email) {
         const existingEmail = await prisma.user.findUnique({
           where: { email: cleanEmail },
@@ -237,7 +263,8 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
     }
 
     if (upiId !== undefined) {
-      updateData.upiId = upiId && typeof upiId === 'string' && upiId.trim() ? upiId.trim() : null;
+      updateData.upiId =
+        upiId && typeof upiId === 'string' && upiId.trim() ? upiId.trim() : null;
     }
 
     if (bankAccount !== undefined) {
@@ -247,10 +274,18 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
         updateData.bankName = null;
         updateData.bankAccountHolderName = null;
       } else if (typeof bankAccount === 'object') {
-        updateData.bankAccountNumber = bankAccount.accountNumber ? String(bankAccount.accountNumber).trim() : null;
-        updateData.bankIfsc = bankAccount.ifsc ? String(bankAccount.ifsc).trim().toUpperCase() : null;
-        updateData.bankName = bankAccount.bankName ? String(bankAccount.bankName).trim() : null;
-        updateData.bankAccountHolderName = bankAccount.accountHolderName ? String(bankAccount.accountHolderName).trim() : null;
+        updateData.bankAccountNumber = bankAccount.accountNumber
+          ? String(bankAccount.accountNumber).trim()
+          : null;
+        updateData.bankIfsc = bankAccount.ifsc
+          ? String(bankAccount.ifsc).trim().toUpperCase()
+          : null;
+        updateData.bankName = bankAccount.bankName
+          ? String(bankAccount.bankName).trim()
+          : null;
+        updateData.bankAccountHolderName = bankAccount.accountHolderName
+          ? String(bankAccount.accountHolderName).trim()
+          : null;
       }
     }
 

@@ -3,13 +3,11 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { Logo } from '../../components/common/Logo';
 import { CustomInput } from '../../components/inputs/CustomInput';
@@ -17,18 +15,17 @@ import { PrimaryButton } from '../../components/buttons/PrimaryButton';
 import { useAuth } from '../../hooks/useAuth';
 
 export const LoginScreen = () => {
-  const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { loginUser } = useAuth();
+  const { loginStaff } = useAuth();
 
-  const [identifier, setIdentifier] = useState('aditya@example.com');
-  const [password, setPassword] = useState('demo123');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   const handleLogin = async () => {
     setErrorMessage('');
     if (!identifier.trim()) {
-      setErrorMessage('Please enter your email or mobile number.');
+      setErrorMessage('Please enter your registered mobile number or email.');
       return;
     }
     if (!password.trim()) {
@@ -37,18 +34,12 @@ export const LoginScreen = () => {
     }
 
     setLoading(true);
-    const res = await loginUser(identifier, password);
+    const res = await loginStaff(identifier.trim(), password);
     setLoading(false);
 
     if (!res.success) {
-      setErrorMessage(res.error || 'Login failed. Please check credentials.');
+      setErrorMessage(res.error || 'Login failed. Please check your credentials.');
     }
-  };
-
-  const handleQuickDemoFill = () => {
-    setIdentifier('aditya@example.com');
-    setPassword('demo123');
-    setErrorMessage('');
   };
 
   return (
@@ -61,47 +52,38 @@ export const LoginScreen = () => {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Logo and Greeting Header */}
+        {/* Logo & Header */}
         <View style={styles.header}>
           <Logo size="lg" showTagline />
-          <Text style={styles.welcomeTitle}>Welcome Back</Text>
+          <View style={styles.staffBadge}>
+            <Ionicons name="shield-checkmark" size={14} color={colors.primary} />
+            <Text style={styles.staffBadgeText}>STAFF & ADMIN PORTAL</Text>
+          </View>
+          <Text style={styles.welcomeTitle}>Staff Sign In</Text>
           <Text style={styles.welcomeSubtitle}>
-            Log in to manage your VF Wallet balance & rewards
+            Sign in with your Super Admin or Employee credentials to manage client
+            accounts, OCR deposits & payouts.
           </Text>
         </View>
 
-        {/* Demo Quick Banner */}
-        <TouchableOpacity
-          style={styles.demoBanner}
-          onPress={handleQuickDemoFill}
-          activeOpacity={0.8}
-        >
-          <View style={styles.demoBadge}>
-            <Text style={styles.demoBadgeText}>DEMO</Text>
-          </View>
-          <Text style={styles.demoBannerText}>
-            Tap here to auto-fill Aditya Sharma's demo account
-          </Text>
-        </TouchableOpacity>
-
-        {/* Form Inputs */}
+        {/* Form Card */}
         <View style={styles.formCard}>
           <CustomInput
-            label="Email or Mobile Number"
-            placeholder="e.g. aditya@example.com or 9820123456"
+            label="Phone Number or Email"
+            placeholder="e.g. 9999999999 or staff@vfwallet.com"
             value={identifier}
             onChangeText={(text) => {
               setIdentifier(text);
               if (errorMessage) setErrorMessage('');
             }}
-            leftIcon="mail-outline"
+            leftIcon="person-outline"
             autoCapitalize="none"
             keyboardType="email-address"
           />
 
           <CustomInput
             label="Password"
-            placeholder="Enter password"
+            placeholder="Enter your password"
             value={password}
             onChangeText={(text) => {
               setPassword(text);
@@ -111,50 +93,32 @@ export const LoginScreen = () => {
             isPassword
           />
 
-          <TouchableOpacity
-            style={styles.forgotBtn}
-            onPress={() => navigation.navigate('ForgotPassword')}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.forgotText}>Forgot Password?</Text>
-          </TouchableOpacity>
-
           {errorMessage ? (
             <View style={styles.errorBox}>
+              <Ionicons name="alert-circle" size={16} color={colors.danger} />
               <Text style={styles.errorText}>{errorMessage}</Text>
             </View>
           ) : null}
 
           <PrimaryButton
-            title="Sign In to Wallet"
+            title="Sign In to Portal"
             onPress={handleLogin}
             loading={loading}
             fullWidth
             size="lg"
+            icon="log-in-outline"
             style={styles.loginBtn}
           />
-
-          <View style={styles.signupRow}>
-            <Text style={styles.signupPrompt}>Don't have an account? </Text>
-            <TouchableOpacity
-              onPress={() => navigation.navigate('Signup')}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.signupLink}>Sign Up</Text>
-            </TouchableOpacity>
-          </View>
         </View>
 
-        {/* Switch to Admin Portal */}
-        <TouchableOpacity
-          style={styles.adminSwitchBtn}
-          onPress={() => navigation.navigate('AdminLogin')}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.adminSwitchText}>
-            Switch to <Text style={styles.adminSwitchBold}>Admin Portal 🛡️</Text>
+        {/* Info Footer */}
+        <View style={styles.infoNote}>
+          <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+          <Text style={styles.infoNoteText}>
+            Client accounts are managed internally and do not require app login.
+            Contact Super Admin for Employee credentials & permissions.
           </Text>
-        </TouchableOpacity>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -173,13 +137,31 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 24,
+  },
+  staffBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.lightBlue,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+    marginTop: 18,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#CCE0FF',
+  },
+  staffBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.primaryDark,
+    letterSpacing: 0.6,
   },
   welcomeTitle: {
     fontSize: 24,
     fontWeight: '800',
     color: colors.text,
-    marginTop: 20,
+    marginTop: 12,
     letterSpacing: -0.3,
   },
   welcomeSubtitle: {
@@ -187,35 +169,8 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     marginTop: 6,
-    paddingHorizontal: 16,
-  },
-  demoBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.lightBlue,
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#CCE0FF',
-  },
-  demoBadge: {
-    backgroundColor: colors.primary,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginRight: 8,
-  },
-  demoBadgeText: {
-    color: colors.white,
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  demoBannerText: {
-    fontSize: 12,
-    color: colors.primaryDark,
-    fontWeight: '600',
-    flex: 1,
+    paddingHorizontal: 12,
+    lineHeight: 19,
   },
   formCard: {
     backgroundColor: colors.white,
@@ -229,67 +184,39 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
   },
-  forgotBtn: {
-    alignSelf: 'flex-end',
-    marginBottom: 16,
-    marginTop: -4,
-  },
-  forgotText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.primary,
-  },
   errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: colors.dangerLight,
-    padding: 10,
-    borderRadius: 8,
+    padding: 12,
+    borderRadius: 10,
     marginBottom: 14,
     borderWidth: 1,
     borderColor: '#FFD1D1',
+    gap: 8,
   },
   errorText: {
     fontSize: 12,
     color: colors.dangerDark,
-    fontWeight: '500',
-    textAlign: 'center',
+    fontWeight: '600',
+    flex: 1,
   },
   loginBtn: {
-    marginTop: 4,
+    marginTop: 6,
   },
-  signupRow: {
+  infoNote: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 18,
+    alignItems: 'flex-start',
+    marginTop: 22,
+    paddingHorizontal: 12,
+    gap: 8,
   },
-  signupPrompt: {
-    fontSize: 13,
-    color: colors.textSecondary,
-  },
-  signupLink: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-  adminSwitchBtn: {
-    alignSelf: 'center',
-    marginTop: 24,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  adminSwitchText: {
-    fontSize: 13,
-    color: colors.textSecondary,
-  },
-  adminSwitchBold: {
-    fontWeight: '700',
-    color: colors.secondary,
+  infoNoteText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    flex: 1,
+    lineHeight: 18,
   },
 });
 
 export default LoginScreen;
-
