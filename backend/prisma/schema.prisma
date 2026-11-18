@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  BONUS
+}
+
+enum TransactionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                        String        @id @default(uuid())
+  name                      String
+  phone                     String        @unique
+  email                     String?       @unique
+  passwordHash              String
+  role                      Role          @default(USER)
+  isBlocked                 Boolean       @default(false)
+  bonusPercentage           Float         @default(10.0)
+  bonusThresholdLimitPaise  Int           @default(1000000)
+  totalBalancePaise         Int           @default(0)
+  upiId                     String?
+  bankAccountNumber         String?
+  bankIfsc                  String?
+  bankName                  String?
+  bankAccountHolderName     String?
+  avatarUrl                 String?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  transactions              Transaction[]
+}
+
+model Transaction {
+  id                 String            @id @default(uuid())
+  userId             String
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type               TransactionType
+  status             TransactionStatus @default(PENDING)
+  amountPaise        Int
+  bonusPaise         Int               @default(0)
+  withdrawablePaise  Int               @default(0)
+  utr                String?           @unique
+  imageHash          String?           @unique
+  imageUrl           String?
+  paymentApp         String?
+  rawOcrData         Json?
+  rejectionReason    String?
+  processedByAdminId String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([userId])
+}

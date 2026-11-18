@@ -17,6 +17,7 @@ import { OcrProcessingScreen } from '../screens/user/OcrProcessingScreen';
 
 export type UserStackParamList = {
   UserTabs: undefined;
+  UserDashboard: undefined;
   Deposit: undefined;
   Withdraw: undefined;
   TransactionDetails: { transactionId: string };
@@ -122,6 +123,7 @@ export const UserNavigator = () => {
       }}
     >
       <Stack.Screen name="UserTabs" component={UserTabNavigator} />
+      <Stack.Screen name="UserDashboard" component={UserTabNavigator} />
       <Stack.Screen name="Deposit" component={DepositScreen} />
       <Stack.Screen name="Withdraw" component={WithdrawScreen} />
       <Stack.Screen name="OcrProcessing" component={OcrProcessingScreen} />

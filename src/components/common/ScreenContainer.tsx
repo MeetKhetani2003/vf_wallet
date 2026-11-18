@@ -19,6 +19,7 @@ interface ScreenContainerProps {
   style?: ViewStyle;
   contentContainerStyle?: ViewStyle;
   statusBarStyle?: 'light' | 'dark' | 'auto';
+  keyboardShouldPersistTaps?: 'always' | 'never' | 'handled';
 }
 
 export const ScreenContainer: React.FC<ScreenContainerProps> = ({
@@ -30,6 +31,7 @@ export const ScreenContainer: React.FC<ScreenContainerProps> = ({
   style,
   contentContainerStyle,
   statusBarStyle = 'dark',
+  keyboardShouldPersistTaps = 'handled',
 }) => {
   return (
     <SafeAreaView
@@ -42,6 +44,7 @@ export const ScreenContainer: React.FC<ScreenContainerProps> = ({
           style={styles.container}
           contentContainerStyle={[styles.contentContainer, contentContainerStyle]}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps={keyboardShouldPersistTaps}
           refreshControl={
             onRefresh ? (
               <RefreshControl

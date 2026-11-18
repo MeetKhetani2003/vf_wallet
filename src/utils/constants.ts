@@ -20,6 +20,7 @@ export const QUICK_WITHDRAWAL_PERCENTAGES = [25, 50, 75, 100];
 
 export const STORAGE_KEYS = {
   AUTH_USER: '@vf_wallet_auth_user',
+  AUTH_TOKEN: '@vf_wallet_auth_token',
   USERS: '@vf_wallet_users_list',
   TRANSACTIONS: '@vf_wallet_transactions_list',
   BONUS_CONFIG: '@vf_wallet_bonus_config',

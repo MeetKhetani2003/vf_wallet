@@ -64,6 +64,23 @@ export const UserCard: React.FC<UserCardProps> = ({
         <StatusBadge status={user.status} size="sm" />
       </View>
 
+      {/* Bonus & Threshold Configuration Row */}
+      <View style={styles.bonusBadgeRow}>
+        <View style={styles.bonusChip}>
+          <Ionicons name="sparkles" size={12} color="#B45309" />
+          <Text style={styles.bonusChipText}>
+            Bonus: <Text style={styles.bonusChipBold}>{user.bonusPercentage ?? 10}%</Text>
+          </Text>
+        </View>
+
+        <View style={styles.limitChip}>
+          <Ionicons name="shield-checkmark-outline" size={12} color={colors.primary} />
+          <Text style={styles.limitChipText}>
+            Limit: <Text style={styles.limitChipBold}>{formatPaiseToINR(user.bonusThresholdLimitPaise ?? 1000000)}</Text>
+          </Text>
+        </View>
+      </View>
+
       <View style={styles.divider} />
 
       {/* Financial Metrics */}
@@ -173,6 +190,45 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.divider,
     marginVertical: 12,
+  },
+  bonusBadgeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  bonusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    gap: 4,
+  },
+  bonusChipText: {
+    fontSize: 11,
+    color: '#92400E',
+  },
+  bonusChipBold: {
+    fontWeight: '700',
+    color: '#78350F',
+  },
+  limitChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    gap: 4,
+  },
+  limitChipText: {
+    fontSize: 11,
+    color: colors.primary,
+  },
+  limitChipBold: {
+    fontWeight: '700',
+    color: colors.secondary,
   },
   metricsGrid: {
     flexDirection: 'row',

@@ -153,13 +153,26 @@ export const OcrProcessingScreen = () => {
       setCreatedTxnId(res.transaction.id);
       setSuccessModalVisible(true);
     } else {
-      setSubmitError(res.error || 'Failed to submit deposit request.');
+      if (
+        res.isDuplicate ||
+        res.status === 409 ||
+        res.error?.includes('already') ||
+        res.error?.includes('duplicate')
+      ) {
+        Alert.alert(
+          'Duplicate Submission Blocked ⚠️',
+          res.error ||
+            'This transaction reference (UTR) or payment screenshot has already been submitted.'
+        );
+      } else {
+        setSubmitError(res.error || 'Failed to submit deposit request.');
+      }
     }
   };
 
   const handleSuccessDone = () => {
     setSuccessModalVisible(false);
-    navigation.navigate('UserDashboard');
+    navigation.navigate('UserTabs');
   };
 
   return (
