@@ -8,6 +8,7 @@ import {
   isSuperAdminRole,
   isClientRole,
 } from '../utils/permissions';
+import { getRunningDailyBonusRate } from '../utils/dailyBonus';
 
 const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
   const principal = totalDepositPrincipalPaise ?? 0;
@@ -33,6 +34,8 @@ const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
     isBlocked: user.isBlocked,
     bonusPercentage: user.bonusPercentage,
     bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
+    thresholdStartLimitPaise: user.bonusThresholdLimitPaise,
+    thresholdStartLimitRupees: user.bonusThresholdLimitPaise / 100,
     totalBalancePaise: user.totalBalancePaise,
     totalDepositPrincipalPaise: principal,
     withdrawablePaise,
@@ -161,7 +164,7 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     // Bonus & threshold config (for Clients)
-    let thresholdPaise = 1000000; // Default: ₹10,000 = 1,000,000 paise
+    let thresholdPaise = 1500000; // Default threshold start limit: ₹15,000 = 1,500,000 paise
     const canConfigureThreshold =
       req.user.isSuperAdmin || req.user.permissions.canSetThreshold;
     if (canConfigureThreshold) {
@@ -178,10 +181,13 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    let finalBonusPercentage = 10.0;
+    // Default to today's active running bonus rate (or 0% if none set)
+    const dailyInfo = await getRunningDailyBonusRate();
+    let finalBonusPercentage = dailyInfo.isActive ? dailyInfo.percentage : 0.0;
+
     const canConfigureBonus =
       req.user.isSuperAdmin || req.user.permissions.canSetBonus;
-    if (canConfigureBonus) {
+    if (canConfigureBonus && bonusPercentage !== undefined) {
       const parsedBonus = Number(bonusPercentage);
       if (!isNaN(parsedBonus) && parsedBonus >= 0 && parsedBonus <= 100) {
         finalBonusPercentage = parsedBonus;

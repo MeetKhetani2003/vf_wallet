@@ -22,7 +22,10 @@ const getDevHost = (): string => {
   return 'localhost:5000';
 };
 
-export const DEFAULT_API_BASE_URL = `http://${getDevHost()}/api`;
+export const PRODUCTION_API_URL = 'https://vf-wallet-backend.onrender.com/api';
+
+// Default to production deployed backend on Render (especially critical for APK release/debug builds)
+export const DEFAULT_API_BASE_URL = PRODUCTION_API_URL;
 
 let activeBaseUrl = DEFAULT_API_BASE_URL;
 
@@ -275,6 +278,8 @@ export const adminApi = {
     clientId: string,
     data: {
       amountPaise: number;
+      clientName?: string;
+      clientPhone?: string;
       utr?: string;
       imageHash?: string;
       imageUrl?: string;
@@ -395,6 +400,14 @@ export const adminApi = {
 
   async getAdminStats() {
     return apiClient.get('/admin/stats');
+  },
+
+  async getDailyBonus() {
+    return apiClient.get('/admin/daily-bonus');
+  },
+
+  async setDailyBonus(percentage: number, isActive: boolean = true) {
+    return apiClient.post('/admin/daily-bonus', { percentage, isActive });
   },
 };
 

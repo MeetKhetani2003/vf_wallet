@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Android builds & packages
+*.apk
+*.aab
+VF-Wallet-Release.apk

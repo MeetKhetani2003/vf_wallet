@@ -653,66 +653,44 @@ export const UserManagementScreen = () => {
                 onChangeText={setPhone}
               />
 
-              <Text style={styles.fieldLabel}>Email (Optional)</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="name@example.com"
-                placeholderTextColor={colors.textLight}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                value={email}
-                onChangeText={setEmail}
-              />
-
               {createType === 'CLIENT' ? (
                 <>
                   <View style={styles.noLoginBadge}>
                     <Ionicons name="information-circle" size={16} color={colors.primary} />
                     <Text style={styles.noLoginBadgeText}>
-                      Clients are managed by staff — no password or app login required.
+                      Client info requires only Name & Phone. Daily running bonus automatically applies to deposits.
                     </Text>
                   </View>
 
-                  <Text style={styles.fieldLabel}>Default UPI ID (Optional)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="e.g. client@okaxis"
-                    placeholderTextColor={colors.textLight}
-                    autoCapitalize="none"
-                    value={upiId}
-                    onChangeText={setUpiId}
-                  />
-
-                  <View style={styles.twoColRow}>
-                    {canSetBonus && (
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.fieldLabel}>Bonus %</Text>
-                        <TextInput
-                          style={styles.textInput}
-                          placeholder="10.0"
-                          keyboardType="decimal-pad"
-                          value={bonusPercentage}
-                          onChangeText={setBonusPercentage}
-                        />
-                      </View>
-                    )}
-
-                    {canSetThreshold && (
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.fieldLabel}>Threshold Limit (₹)</Text>
-                        <TextInput
-                          style={styles.textInput}
-                          placeholder="10000"
-                          keyboardType="numeric"
-                          value={bonusThresholdLimit}
-                          onChangeText={setBonusThresholdLimit}
-                        />
-                      </View>
-                    )}
-                  </View>
+                  {canSetThreshold && (
+                    <View style={{ marginTop: 6 }}>
+                      <Text style={styles.fieldLabel}>Threshold Start Limit (₹)</Text>
+                      <TextInput
+                        style={styles.textInput}
+                        placeholder="15000"
+                        keyboardType="numeric"
+                        value={bonusThresholdLimit}
+                        onChangeText={setBonusThresholdLimit}
+                      />
+                      <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                        Withdrawals reaching/exceeding this limit will have the bonus excluded.
+                      </Text>
+                    </View>
+                  )}
                 </>
               ) : (
                 <>
+                  <Text style={styles.fieldLabel}>Email (Optional)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="name@example.com"
+                    placeholderTextColor={colors.textLight}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={email}
+                    onChangeText={setEmail}
+                  />
+
                   {/* Employee Credentials */}
                   <Text style={styles.fieldLabel}>Employee Login Password *</Text>
                   <TextInput

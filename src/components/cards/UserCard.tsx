@@ -55,9 +55,9 @@ export const UserCard: React.FC<UserCardProps> = ({
               )}
             </View>
             <Text style={styles.idText}>
-              {user.id} • {user.phone}
+              +91 {user.phone}
             </Text>
-            <Text style={styles.dateText}>Registered: {regDate}</Text>
+            <Text style={styles.dateText}>Added: {regDate}</Text>
           </View>
         </View>
 

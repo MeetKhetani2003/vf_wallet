@@ -127,17 +127,35 @@ export const ClientWithdrawScreen = () => {
     return c.name.toLowerCase().includes(q) || c.phone.includes(q);
   });
 
-  // Rule-Based Withdrawable Metrics for Selected Client
+  // Rule-Based Threshold Start Limit & Withdrawable Metrics
   const totalBalancePaise = selectedClient?.totalBalancePaise || 0;
   const principalPaise = selectedClient?.totalDepositPrincipalPaise || 0;
-  const thresholdPaise = selectedClient?.bonusThresholdLimitPaise ?? 1000000;
-  const isThresholdReached = totalBalancePaise >= thresholdPaise;
-  const maxWithdrawablePaise =
-    selectedClient?.withdrawablePaise ??
-    (isThresholdReached ? Math.min(totalBalancePaise, principalPaise) : totalBalancePaise);
+  const thresholdStartLimitPaise =
+    selectedClient?.bonusThresholdLimitPaise ?? 1500000; // Default ₹15,000
+  const clientBonusPct = selectedClient?.bonusPercentage ?? 10.0;
+
+  // Active bonus attached to client's account
+  const activeBonusPaise =
+    selectedClient && principalPaise > 0
+      ? Math.max(0, totalBalancePaise - principalPaise)
+      : Math.round(
+          (totalBalancePaise * clientBonusPct) / (100 + clientBonusPct)
+        );
 
   const numericAmount = parseFloat(amountText.replace(/,/g, '')) || 0;
   const requestedPaise = numericAmount > 0 ? rupeesToPaise(numericAmount) : 0;
+
+  // Threshold rule:
+  // If requested withdrawal >= threshold start limit:
+  //   bonus cannot be withdrawn, so net payout = requested - bonus
+  // If requested withdrawal < threshold start limit:
+  //   no threshold applies, so net payout = requested
+  const isThresholdApplied =
+    requestedPaise >= thresholdStartLimitPaise && activeBonusPaise > 0;
+  const bonusExcludedPaise = isThresholdApplied
+    ? Math.min(activeBonusPaise, requestedPaise)
+    : 0;
+  const netPayoutPaise = Math.max(0, requestedPaise - bonusExcludedPaise);
 
   const handleProcessWithdrawal = async () => {
     if (!selectedClient) {
@@ -150,23 +168,29 @@ export const ClientWithdrawScreen = () => {
       return;
     }
 
-    if (requestedPaise > maxWithdrawablePaise) {
+    if (requestedPaise > totalBalancePaise) {
       Alert.alert(
-        'Exceeds Withdrawable Limit',
-        `Maximum eligible withdrawable cash for ${selectedClient.name} is ${formatPaiseToINR(
-          maxWithdrawablePaise
-        )}.`
+        'Insufficient Balance',
+        `Client balance is ${formatPaiseToINR(
+          totalBalancePaise
+        )}. Requested withdrawal exceeds total available balance.`
       );
       return;
     }
 
     if (payoutMethod === 'upi' && !upiId.trim()) {
-      Alert.alert('UPI ID Required', 'Please enter the client UPI ID or switch to Direct Payout.');
+      Alert.alert(
+        'UPI ID Required',
+        'Please enter the client UPI ID or switch to Direct Payout.'
+      );
       return;
     }
 
     if (payoutMethod === 'bank' && (!accountNumber.trim() || !ifsc.trim())) {
-      Alert.alert('Bank Details Required', 'Please provide both Account Number and IFSC code.');
+      Alert.alert(
+        'Bank Details Required',
+        'Please provide both Account Number and IFSC code.'
+      );
       return;
     }
 
@@ -187,7 +211,8 @@ export const ClientWithdrawScreen = () => {
                 bankName: bankName.trim() || 'Bank Account',
                 accountNumber: accountNumber.trim(),
                 ifsc: ifsc.trim().toUpperCase(),
-                accountHolderName: accountHolderName.trim() || selectedClient.name,
+                accountHolderName:
+                  accountHolderName.trim() || selectedClient.name,
               }
             : undefined,
         notes: notes.trim() || undefined,
@@ -196,20 +221,30 @@ export const ClientWithdrawScreen = () => {
       if (res.success) {
         await Promise.all([refreshData(), loadClients()]);
         Alert.alert(
-          'Payout Auto-Accepted! ✅',
-          `${formatPaiseToINR(requestedPaise)} has been debited from ${
-            selectedClient.name
-          }.\n\nRemaining Balance: ${formatPaiseToINR(
-            res.clientNewBalancePaise ?? Math.max(0, totalBalancePaise - requestedPaise)
-          )}`
+          'Payout Processed! ✅',
+          res.message ||
+            `Requested ${formatPaiseToINR(
+              requestedPaise
+            )}. Paid out ${formatPaiseToINR(netPayoutPaise)} to ${
+              selectedClient.name
+            }.\n\nRemaining Balance: ${formatPaiseToINR(
+              res.clientNewBalancePaise ??
+                Math.max(0, totalBalancePaise - requestedPaise)
+            )}`
         );
         setAmountText('');
         setNotes('');
       } else {
-        Alert.alert('Withdrawal Blocked', res.error || 'Could not process withdrawal.');
+        Alert.alert(
+          'Withdrawal Blocked',
+          res.error || 'Could not process withdrawal.'
+        );
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Unexpected error processing withdrawal.');
+      Alert.alert(
+        'Error',
+        e?.message || 'Unexpected error processing withdrawal.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -257,7 +292,7 @@ export const ClientWithdrawScreen = () => {
                   <Text style={styles.selectedClientName}>{selectedClient.name}</Text>
                   <Text style={styles.selectedClientMeta}>+91 {selectedClient.phone}</Text>
                   <Text style={styles.selectedClientBal}>
-                    Withdrawable: {formatPaiseToINR(maxWithdrawablePaise)}
+                    Balance: {formatPaiseToINR(totalBalancePaise)} • Threshold: {formatPaiseToINR(thresholdStartLimitPaise)}
                   </Text>
                 </View>
                 <View style={styles.changePill}>
@@ -274,36 +309,91 @@ export const ClientWithdrawScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Step 2: Real-Time Rule-Based Breakdown */}
+        {/* Step 2: Real-Time Threshold Rule & Payout Calculation */}
         {selectedClient && (
           <View style={styles.card}>
-            <Text style={styles.stepTitle}>2. Withdrawable Real Cash Calculation</Text>
+            <Text style={styles.stepTitle}>2. Threshold Rule & Payout Calculation</Text>
 
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Total Wallet Balance Points</Text>
+              <Text style={styles.metricLabel}>Total Wallet Balance</Text>
               <Text style={styles.metricVal}>{formatPaiseToINR(totalBalancePaise)}</Text>
             </View>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Total Approved Deposit Principal</Text>
-              <Text style={styles.metricVal}>{formatPaiseToINR(principalPaise)}</Text>
+              <Text style={styles.metricLabel}>Threshold Start Limit</Text>
+              <Text style={styles.metricVal}>{formatPaiseToINR(thresholdStartLimitPaise)}</Text>
             </View>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Assigned Threshold Limit</Text>
-              <Text style={styles.metricVal}>{formatPaiseToINR(thresholdPaise)}</Text>
-            </View>
-            <View style={[styles.metricRow, styles.highlightMetricRow]}>
-              <Text style={styles.highlightLabel}>Eligible Withdrawable Cash</Text>
-              <Text style={styles.highlightVal}>{formatPaiseToINR(maxWithdrawablePaise)}</Text>
+              <Text style={styles.metricLabel}>Active Bonus in Wallet</Text>
+              <Text style={[styles.metricVal, { color: '#B45309' }]}>
+                {formatPaiseToINR(activeBonusPaise)}
+              </Text>
             </View>
 
-            {isThresholdReached && (
-              <View style={styles.thresholdWarningBox}>
-                <Ionicons name="warning" size={18} color="#B45309" />
-                <Text style={styles.thresholdWarningText}>
-                  Threshold Limit Reached ({formatPaiseToINR(thresholdPaise)}): Bonus points
-                  are excluded. Only deposited principal cash (
-                  {formatPaiseToINR(maxWithdrawablePaise)}) is eligible for payout.
+            {requestedPaise > 0 && (
+              <View
+                style={[
+                  styles.ruleStatusBox,
+                  isThresholdApplied ? styles.ruleBoxTriggered : styles.ruleBoxNormal,
+                ]}
+              >
+                <View style={styles.ruleStatusHeader}>
+                  <Ionicons
+                    name={isThresholdApplied ? 'shield' : 'checkmark-circle'}
+                    size={18}
+                    color={isThresholdApplied ? '#B45309' : '#15803D'}
+                  />
+                  <Text
+                    style={[
+                      styles.ruleStatusTitle,
+                      isThresholdApplied
+                        ? styles.ruleTitleTriggered
+                        : styles.ruleTitleNormal,
+                    ]}
+                  >
+                    {isThresholdApplied
+                      ? `Threshold Start Limit Applied (>= ${formatPaiseToINR(
+                          thresholdStartLimitPaise
+                        )})`
+                      : `Below Threshold Limit (< ${formatPaiseToINR(
+                          thresholdStartLimitPaise
+                        )})`}
+                  </Text>
+                </View>
+
+                <Text style={styles.ruleStatusDesc}>
+                  {isThresholdApplied
+                    ? `Because withdrawal reaches/exceeds ${formatPaiseToINR(
+                        thresholdStartLimitPaise
+                      )}, the ${formatPaiseToINR(
+                        bonusExcludedPaise
+                      )} bonus is excluded and cannot be cashed out.`
+                    : `No threshold applied. Full amount of ${formatPaiseToINR(
+                        requestedPaise
+                      )} is eligible for cash withdrawal.`}
                 </Text>
+
+                <View style={styles.calcDivider} />
+
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Requested Debit Amount:</Text>
+                  <Text style={styles.calcVal}>{formatPaiseToINR(requestedPaise)}</Text>
+                </View>
+                {isThresholdApplied && (
+                  <View style={styles.calcRow}>
+                    <Text style={[styles.calcLabel, { color: '#B45309' }]}>
+                      Bonus Excluded (Cannot Withdraw):
+                    </Text>
+                    <Text style={[styles.calcVal, { color: '#B45309' }]}>
+                      -{formatPaiseToINR(bonusExcludedPaise)}
+                    </Text>
+                  </View>
+                )}
+                <View style={[styles.calcRow, styles.calcRowTotal]}>
+                  <Text style={styles.calcTotalLabel}>Net Cash Payout to Client:</Text>
+                  <Text style={styles.calcTotalVal}>
+                    {formatPaiseToINR(netPayoutPaise)}
+                  </Text>
+                </View>
               </View>
             )}
           </View>
@@ -313,13 +403,13 @@ export const ClientWithdrawScreen = () => {
         <View style={styles.card}>
           <View style={styles.amountHeaderRow}>
             <Text style={styles.stepTitle}>3. Enter Payout Details</Text>
-            {selectedClient && maxWithdrawablePaise > 0 && (
+            {selectedClient && totalBalancePaise > 0 && (
               <TouchableOpacity
                 style={styles.maxChip}
-                onPress={() => setAmountText((maxWithdrawablePaise / 100).toString())}
+                onPress={() => setAmountText((totalBalancePaise / 100).toString())}
               >
                 <Text style={styles.maxChipText}>
-                  Max: {formatPaiseToINR(maxWithdrawablePaise)}
+                  Max: {formatPaiseToINR(totalBalancePaise)}
                 </Text>
               </TouchableOpacity>
             )}
@@ -421,7 +511,13 @@ export const ClientWithdrawScreen = () => {
           />
 
           <PrimaryButton
-            title={isSubmitting ? 'Processing Payout...' : 'Process Instant Payout'}
+            title={
+              isSubmitting
+                ? 'Processing Payout...'
+                : requestedPaise > 0
+                ? `Pay Out ${formatPaiseToINR(netPayoutPaise)} Net Cash`
+                : 'Process Instant Payout'
+            }
             onPress={handleProcessWithdrawal}
             loading={isSubmitting}
             disabled={isSubmitting || !selectedClient}
@@ -803,6 +899,77 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 19,
+  },
+  ruleStatusBox: {
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 12,
+    borderWidth: 1.5,
+  },
+  ruleBoxTriggered: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  ruleBoxNormal: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  ruleStatusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  ruleStatusTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  ruleTitleTriggered: {
+    color: '#B45309',
+  },
+  ruleTitleNormal: {
+    color: '#15803D',
+  },
+  ruleStatusDesc: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 17,
+  },
+  calcDivider: {
+    height: 1,
+    backgroundColor: colors.divider,
+    marginVertical: 10,
+  },
+  calcRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  calcLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  calcVal: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  calcRowTotal: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  calcTotalLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  calcTotalVal: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#15803D',
   },
 });
 

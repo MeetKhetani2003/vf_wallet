@@ -57,6 +57,17 @@ export const ClientOcrDepositScreen = () => {
   const [pickerVisible, setPickerVisible] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
 
+  // Daily Running Bonus State (Day-based bonus set by Superadmin)
+  const [dailyBonusRate, setDailyBonusRate] = useState<number>(0);
+  const [isDailyBonusActive, setIsDailyBonusActive] = useState<boolean>(false);
+  const [todayBonusDate, setTodayBonusDate] = useState<string>('');
+
+  // Inline Quick Client Creation State (Name + Phone)
+  const [quickCreateVisible, setQuickCreateVisible] = useState(false);
+  const [quickClientName, setQuickClientName] = useState('');
+  const [quickClientPhone, setQuickClientPhone] = useState('');
+  const [isQuickCreating, setIsQuickCreating] = useState(false);
+
   // OCR & Receipt State
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -77,12 +88,22 @@ export const ClientOcrDepositScreen = () => {
   // Submission State
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Sync live clients list
+  // Sync live clients list & today's running bonus
   const loadClients = useCallback(async () => {
     try {
-      const res = await adminApi.getUsers({ role: 'CLIENT' });
-      if (res.success && Array.isArray(res.users)) {
-        const mapped: User[] = res.users.map((u: any) => ({
+      const [usersRes, dailyRes] = await Promise.all([
+        adminApi.getUsers({ role: 'CLIENT' }),
+        adminApi.getDailyBonus(),
+      ]);
+
+      if (dailyRes.success) {
+        setDailyBonusRate(dailyRes.isActive ? dailyRes.percentage : 0);
+        setIsDailyBonusActive(Boolean(dailyRes.isActive));
+        if (dailyRes.date) setTodayBonusDate(dailyRes.date);
+      }
+
+      if (usersRes.success && Array.isArray(usersRes.users)) {
+        const mapped: User[] = usersRes.users.map((u: any) => ({
           id: u.id,
           name: u.name,
           phone: u.phone,
@@ -94,7 +115,7 @@ export const ClientOcrDepositScreen = () => {
           upiId: u.upiId || undefined,
           bankAccount: u.bankAccount || undefined,
           bonusPercentage: u.bonusPercentage ?? 10.0,
-          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1500000,
           totalBalancePaise: u.totalBalancePaise || 0,
           totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
           withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
@@ -109,7 +130,7 @@ export const ClientOcrDepositScreen = () => {
         }
       }
     } catch (e) {
-      console.warn('Could not load clients:', e);
+      console.warn('Could not load clients or daily bonus:', e);
     }
   }, [route.params?.clientId, selectedClient?.id]);
 
@@ -262,15 +283,74 @@ export const ClientOcrDepositScreen = () => {
   };
 
   // Calculations for real-time auto-credit preview
+  // Day-based running bonus set by Superadmin applies automatically to deposits (0% if none set)
   const numericAmount = parseFloat(amountText.replace(/,/g, '')) || 0;
   const amountPaise = numericAmount > 0 ? rupeesToPaise(numericAmount) : 0;
-  const clientBonusPct = selectedClient?.bonusPercentage ?? 10.0;
-  const bonusPaise = Math.round((amountPaise * clientBonusPct) / 100);
+  const effectiveBonusPct = isDailyBonusActive ? dailyBonusRate : 0.0;
+  const bonusPaise = Math.round((amountPaise * effectiveBonusPct) / 100);
   const totalCreditPaise = amountPaise + bonusPaise;
+
+  const handleQuickCreateClient = async () => {
+    if (!quickClientName.trim()) {
+      Alert.alert('Name Required', 'Please enter client full name.');
+      return;
+    }
+    if (!quickClientPhone.trim() || quickClientPhone.trim().length < 10) {
+      Alert.alert('Phone Required', 'Please enter a valid 10-digit phone number.');
+      return;
+    }
+
+    setIsQuickCreating(true);
+    try {
+      const res = await adminApi.createUser({
+        name: quickClientName.trim(),
+        phone: quickClientPhone.trim(),
+        userType: 'CLIENT',
+        bonusPercentage: effectiveBonusPct,
+      });
+
+      if (res.success && res.user) {
+        const newClient: User = {
+          id: res.user.id,
+          name: res.user.name,
+          phone: res.user.phone,
+          email: '',
+          role: 'user',
+          accountType: 'CLIENT',
+          status: 'active',
+          createdAt: res.user.createdAt,
+          bonusPercentage: effectiveBonusPct,
+          bonusThresholdLimitPaise: res.user.bonusThresholdLimitPaise || 1500000,
+          totalBalancePaise: 0,
+          totalDepositPrincipalPaise: 0,
+          withdrawablePaise: 0,
+          isThresholdReached: false,
+        };
+
+        setClients((prev) => [newClient, ...prev]);
+        setSelectedClient(newClient);
+        setQuickCreateVisible(false);
+        setPickerVisible(false);
+        setClientSearch('');
+        setQuickClientName('');
+        setQuickClientPhone('');
+        Alert.alert(
+          'Client Created & Selected! ✅',
+          `Created "${newClient.name}" (+91 ${newClient.phone}). Today's running bonus (${effectiveBonusPct}%) is now automatically applied.`
+        );
+      } else {
+        Alert.alert('Client Creation Failed', res.error || 'Could not create client.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to create client.');
+    } finally {
+      setIsQuickCreating(false);
+    }
+  };
 
   const handleSubmitAutoAcceptDeposit = async () => {
     if (!selectedClient) {
-      Alert.alert('Select Client', 'Please select a client account first.');
+      Alert.alert('Select Client', 'Please select or add a client account first.');
       return;
     }
 
@@ -303,7 +383,7 @@ export const ClientOcrDepositScreen = () => {
           'Deposit Credited Instantly! ✅',
           `${formatPaiseToINR(totalCreditPaise)} (Principal ${formatPaiseToINR(
             amountPaise
-          )} + ${clientBonusPct}% Bonus ${formatPaiseToINR(
+          )} + ${effectiveBonusPct}% Daily Bonus ${formatPaiseToINR(
             bonusPaise
           )}) has been auto-credited to ${selectedClient.name}.\n\nNew Balance: ${formatPaiseToINR(
             res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise
@@ -348,11 +428,27 @@ export const ClientOcrDepositScreen = () => {
       />
 
       <View style={styles.content}>
-        {/* Auto-Accept Banner */}
-        <View style={styles.autoAcceptBanner}>
-          <Ionicons name="flash" size={16} color="#15803D" />
-          <Text style={styles.autoAcceptText}>
-            Auto-Accept Active: Verified deposits credit the client wallet immediately with bonus.
+        {/* Auto-Accept & Running Bonus Banner */}
+        <View
+          style={[
+            styles.autoAcceptBanner,
+            !isDailyBonusActive && { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' },
+          ]}
+        >
+          <Ionicons
+            name={isDailyBonusActive ? 'gift' : 'information-circle-outline'}
+            size={18}
+            color={isDailyBonusActive ? '#15803D' : '#64748B'}
+          />
+          <Text
+            style={[
+              styles.autoAcceptText,
+              !isDailyBonusActive && { color: '#475569' },
+            ]}
+          >
+            {isDailyBonusActive
+              ? `Today's Running Bonus: ${dailyBonusRate}% Active (Auto-applied to deposits)`
+              : "Today's Running Bonus: 0% (No bonus configured for today)"}
           </Text>
         </View>
 
@@ -374,7 +470,7 @@ export const ClientOcrDepositScreen = () => {
                 <View style={styles.clientInfoCol}>
                   <Text style={styles.selectedClientName}>{selectedClient.name}</Text>
                   <Text style={styles.selectedClientMeta}>
-                    +91 {selectedClient.phone} • Bonus: {selectedClient.bonusPercentage ?? 10}%
+                    +91 {selectedClient.phone} • Today's Bonus: {effectiveBonusPct}%
                   </Text>
                   <Text style={styles.selectedClientBal}>
                     Balance: {formatPaiseToINR(selectedClient.totalBalancePaise || 0)}
@@ -387,7 +483,7 @@ export const ClientOcrDepositScreen = () => {
             ) : (
               <View style={styles.placeholderRow}>
                 <Ionicons name="person-add-outline" size={20} color={colors.primary} />
-                <Text style={styles.placeholderText}>Tap to choose a client account...</Text>
+                <Text style={styles.placeholderText}>Tap to choose or add client...</Text>
                 <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
               </View>
             )}
@@ -627,7 +723,7 @@ export const ClientOcrDepositScreen = () => {
               </View>
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>
-                  Client Bonus ({clientBonusPct}%)
+                  Today's Running Bonus ({effectiveBonusPct}%)
                 </Text>
                 <Text style={[styles.summaryValue, { color: '#15803D' }]}>
                   +{formatPaiseToINR(bonusPaise)}
@@ -679,12 +775,38 @@ export const ClientOcrDepositScreen = () => {
               <Ionicons name="search" size={18} color={colors.textMuted} />
               <TextInput
                 style={styles.modalSearchInput}
-                placeholder="Search client by name, phone, UPI..."
+                placeholder="Search client by name or phone..."
                 placeholderTextColor={colors.textLight}
                 value={clientSearch}
                 onChangeText={setClientSearch}
               />
             </View>
+
+            {/* Quick Add Client Button (If not in list, write name and create immediately) */}
+            {clientSearch.trim().length > 0 && (
+              <TouchableOpacity
+                style={styles.quickAddClientBtn}
+                onPress={() => {
+                  setQuickClientName(clientSearch.trim());
+                  setQuickClientPhone('');
+                  setQuickCreateVisible(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <View style={styles.quickAddIcon}>
+                  <Ionicons name="person-add" size={16} color={colors.white} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.quickAddTitle}>
+                    + Add New Client: "{clientSearch.trim()}"
+                  </Text>
+                  <Text style={styles.quickAddSub}>
+                    Fast setup with only Name & Phone • Today's Bonus: {effectiveBonusPct}%
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.primary} />
+              </TouchableOpacity>
+            )}
 
             <FlatList
               data={filteredClients}
@@ -692,7 +814,29 @@ export const ClientOcrDepositScreen = () => {
               contentContainerStyle={{ paddingBottom: 24 }}
               ListEmptyComponent={
                 <View style={styles.emptyListBox}>
-                  <Text style={styles.emptyListText}>No active clients found.</Text>
+                  <Text style={styles.emptyListText}>
+                    No client found matching "{clientSearch}".
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.quickAddClientBtn, { marginTop: 12, marginHorizontal: 0 }]}
+                    onPress={() => {
+                      setQuickClientName(clientSearch.trim());
+                      setQuickClientPhone('');
+                      setQuickCreateVisible(true);
+                    }}
+                  >
+                    <View style={styles.quickAddIcon}>
+                      <Ionicons name="person-add" size={16} color={colors.white} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.quickAddTitle}>
+                        Create Client: "{clientSearch.trim() || 'New Client'}"
+                      </Text>
+                      <Text style={styles.quickAddSub}>
+                        Only name & phone required
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
               }
               renderItem={({ item }) => (
@@ -715,7 +859,7 @@ export const ClientOcrDepositScreen = () => {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.optionName}>{item.name}</Text>
                     <Text style={styles.optionSub}>
-                      +91 {item.phone} • Bonus {item.bonusPercentage ?? 10}%
+                      +91 {item.phone} • Today's Bonus: {effectiveBonusPct}%
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
@@ -727,6 +871,76 @@ export const ClientOcrDepositScreen = () => {
                 </TouchableOpacity>
               )}
             />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Quick Create Client Modal (Name + Phone Only) */}
+      <Modal
+        visible={quickCreateVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setQuickCreateVisible(false)}
+      >
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.quickCreateCard}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Add Client Account</Text>
+                <Text style={styles.quickCreateSubText}>
+                  Only Name & Phone required • Running Bonus: {effectiveBonusPct}%
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setQuickCreateVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ marginTop: 14 }}>
+              <Text style={styles.quickFieldLabel}>Client Full Name *</Text>
+              <TextInput
+                style={styles.quickInput}
+                placeholder="e.g. Ramesh Patel"
+                placeholderTextColor={colors.textLight}
+                value={quickClientName}
+                onChangeText={setQuickClientName}
+              />
+
+              <Text style={[styles.quickFieldLabel, { marginTop: 12 }]}>
+                Phone Number (10 Digits) *
+              </Text>
+              <TextInput
+                style={styles.quickInput}
+                placeholder="e.g. 9876543210"
+                placeholderTextColor={colors.textLight}
+                keyboardType="phone-pad"
+                maxLength={10}
+                value={quickClientPhone}
+                onChangeText={setQuickClientPhone}
+              />
+
+              <View style={styles.dailyBonusNoticePill}>
+                <Ionicons name="gift" size={16} color="#15803D" />
+                <Text style={styles.dailyBonusNoticeText}>
+                  Today's running bonus ({effectiveBonusPct}%) will automatically apply to this client's deposits.
+                </Text>
+              </View>
+
+              <View style={styles.quickModalActions}>
+                <SecondaryButton
+                  title="Cancel"
+                  onPress={() => setQuickCreateVisible(false)}
+                  style={{ flex: 1 }}
+                  disabled={isQuickCreating}
+                />
+                <PrimaryButton
+                  title={isQuickCreating ? 'Creating...' : 'Create & Select'}
+                  onPress={handleQuickCreateClient}
+                  loading={isQuickCreating}
+                  style={{ flex: 1 }}
+                />
+              </View>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1133,6 +1347,97 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 19,
+  },
+  quickAddClientBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1.5,
+    borderColor: '#BAE6FD',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+    gap: 10,
+  },
+  quickAddIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickAddTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.primaryDark,
+  },
+  quickAddSub: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 1,
+  },
+  modalOverlayCenter: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  quickCreateCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: colors.white,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  quickCreateSubText: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  quickFieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginBottom: 6,
+  },
+  quickInput: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 14,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  dailyBonusNoticePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  dailyBonusNoticeText: {
+    fontSize: 11,
+    color: '#15803D',
+    fontWeight: '600',
+    flex: 1,
+  },
+  quickModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 18,
   },
 });
 

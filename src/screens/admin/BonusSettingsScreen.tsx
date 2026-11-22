@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,14 @@ import {
   TextInput,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { ScreenContainer } from '../../components/common/ScreenContainer';
 import { Header } from '../../components/common/Header';
 import { PrimaryButton } from '../../components/buttons/PrimaryButton';
+import { adminApi } from '../../services/api';
 import { useWallet } from '../../hooks/useWallet';
 import { formatPaiseToINR, rupeesToPaise } from '../../utils/currency';
 import { calculateDepositPreview } from '../../utils/calculations';
@@ -20,19 +22,47 @@ import { calculateDepositPreview } from '../../utils/calculations';
 export const BonusSettingsScreen = () => {
   const { bonusConfig, updateBonusConfig } = useWallet();
 
-  const [isEnabled, setIsEnabled] = useState(bonusConfig.isEnabled);
-  const [percentageStr, setPercentageStr] = useState(
-    bonusConfig.bonusPercentage.toString()
-  );
-  const [simulatorAmountStr, setSimulatorAmountStr] = useState('10000');
+  const [isEnabled, setIsEnabled] = useState(true);
+  const [percentageStr, setPercentageStr] = useState('10');
+  const [todayDate, setTodayDate] = useState('');
+  const [isSetForToday, setIsSetForToday] = useState(false);
+  const [simulatorAmountStr, setSimulatorAmountStr] = useState('20000');
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Fetch running daily bonus from backend
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const res = await adminApi.getDailyBonus();
+        if (isMounted && res.success) {
+          if (res.percentage !== undefined) {
+            setPercentageStr(String(res.percentage));
+          }
+          if (res.isActive !== undefined) {
+            setIsEnabled(res.isActive);
+          }
+          if (res.date) {
+            setTodayDate(res.date);
+          }
+          setIsSetForToday(Boolean(res.isSetForToday));
+        }
+      } catch (err) {
+        console.warn('Could not load daily bonus config:', err);
+      } finally {
+        if (isMounted) setInitialLoading(false);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const percentage = parseFloat(percentageStr) || 0;
+  const effectivePercentage = isEnabled ? percentage : 0;
   const simAmountPaise = rupeesToPaise(simulatorAmountStr || '0');
-  const preview = calculateDepositPreview(
-    simAmountPaise,
-    isEnabled ? percentage : 0
-  );
+  const preview = calculateDepositPreview(simAmountPaise, effectivePercentage);
 
   const handleSave = async () => {
     if (isNaN(percentage) || percentage < 0 || percentage > 100) {
@@ -44,21 +74,34 @@ export const BonusSettingsScreen = () => {
     }
 
     setLoading(true);
-    await updateBonusConfig(percentage, isEnabled);
-    setLoading(false);
-    Alert.alert(
-      'Settings Updated',
-      `Deposit bonus is now ${isEnabled ? `${percentage}% Active` : 'Disabled'}. This will apply to all future deposit requests.`
-    );
+    try {
+      const res = await adminApi.setDailyBonus(percentage, isEnabled);
+      if (res.success) {
+        setIsSetForToday(true);
+        await updateBonusConfig(percentage, isEnabled);
+        Alert.alert(
+          'Daily Bonus Updated',
+          `Daily running bonus is now ${
+            isEnabled ? `${percentage}% Active` : 'Disabled (0%)'
+          } for today (${todayDate || 'Today'}). This will automatically apply to all client deposits made today.`
+        );
+      } else {
+        Alert.alert('Error', res.error || 'Failed to update daily bonus.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Network error while updating bonus.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const quickPercentages = [2, 5, 10, 15, 20];
+  const quickPercentages = [0, 5, 10, 15, 20];
 
   return (
     <ScreenContainer scrollable backgroundColor={colors.background}>
       <Header
-        title="Bonus Configuration"
-        subtitle="Manage platform deposit cashback rates"
+        title="Daily Running Bonus"
+        subtitle={`Day-based deposit bonus rate ${todayDate ? `(${todayDate})` : ''}`}
       />
 
       <View style={styles.content}>
@@ -66,9 +109,9 @@ export const BonusSettingsScreen = () => {
         <View style={styles.card}>
           <View style={styles.switchRow}>
             <View style={styles.switchTextCol}>
-              <Text style={styles.cardHeading}>Enable Deposit Bonus</Text>
+              <Text style={styles.cardHeading}>Enable Daily Running Bonus</Text>
               <Text style={styles.switchSubtitle}>
-                When active, eligible user deposits receive automatic cashback credit
+                When active, client deposits made today automatically receive this running bonus. If disabled or not set, 0% is applied.
               </Text>
             </View>
             <Switch
@@ -82,9 +125,9 @@ export const BonusSettingsScreen = () => {
 
         {/* Set Bonus Percentage */}
         <View style={[styles.card, !isEnabled && styles.disabledCard]}>
-          <Text style={styles.cardHeading}>Bonus Rate Percentage (%)</Text>
+          <Text style={styles.cardHeading}>Today's Bonus Rate (%)</Text>
           <Text style={styles.cardDescription}>
-            Configures the cashback rate applied to user deposits. Default is 5%.
+            Superadmin sets this rate for the day. Default when not set is 0%.
           </Text>
 
           <View style={styles.rateInputRow}>

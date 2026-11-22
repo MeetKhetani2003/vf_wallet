@@ -13,6 +13,8 @@ import {
   createClientDeposit,
   createClientWithdrawal,
   getAdminStats,
+  getDailyBonusConfig,
+  updateDailyBonusConfig,
 } from '../controllers/adminTransactionController';
 import { scanReceiptOcr } from '../controllers/ocrController';
 import {
@@ -80,6 +82,13 @@ router.post(
   requireAnyPermission('canWithdraw'),
   createClientWithdrawal
 );
+
+// Daily Running Bonus Rate Routes
+// GET /api/admin/daily-bonus (Accessible to all staff to see today's active rate)
+router.get('/daily-bonus', getDailyBonusConfig);
+
+// POST /api/admin/daily-bonus (Super Admin ONLY to set daily rate)
+router.post('/daily-bonus', requireSuperAdmin, updateDailyBonusConfig);
 
 // Master Transaction Ledger
 // GET /api/admin/transactions

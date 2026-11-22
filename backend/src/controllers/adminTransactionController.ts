@@ -3,6 +3,11 @@ import prisma from '../utils/prisma';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { Role, TransactionType, TransactionStatus } from '@prisma/client';
 import { isClientRole } from '../utils/permissions';
+import {
+  getRunningDailyBonusRate,
+  setRunningDailyBonusRate,
+  getTodayDateString,
+} from '../utils/dailyBonus';
 
 /**
  * POST /api/admin/clients/:clientId/deposit
@@ -73,15 +78,56 @@ export const createClientDeposit = async (
       });
     }
 
-    // Validate Client account
-    const client = await prisma.user.findUnique({
-      where: { id: clientId },
-    });
+    // Validate or auto-create Client account on-the-fly
+    let client: any = null;
+    if (clientId && clientId !== 'new') {
+      client = await prisma.user.findUnique({
+        where: { id: clientId },
+      });
+    }
+
+    // On-the-fly client creation by name & phone if client not found or clientId === 'new'
+    const { clientName, clientPhone } = req.body;
+    if (!client && clientName && typeof clientName === 'string' && clientName.trim()) {
+      const cleanName = clientName.trim();
+      const cleanClientPhone =
+        clientPhone && typeof clientPhone === 'string' && clientPhone.trim()
+          ? clientPhone.trim()
+          : null;
+
+      if (!cleanClientPhone) {
+        return res.status(400).json({
+          success: false,
+          error: 'Client phone number is required to register a new client.',
+        });
+      }
+
+      // Check if phone already registered
+      const existingClient = await prisma.user.findUnique({
+        where: { phone: cleanClientPhone },
+      });
+
+      if (existingClient) {
+        client = existingClient;
+      } else {
+        // Create new client account on-the-fly
+        client = await prisma.user.create({
+          data: {
+            name: cleanName,
+            phone: cleanClientPhone,
+            role: Role.CLIENT,
+            bonusPercentage: 0.0,
+            bonusThresholdLimitPaise: 1500000, // ₹15,000 default threshold start limit
+            totalBalancePaise: 0,
+          },
+        });
+      }
+    }
 
     if (!client || !isClientRole(client.role)) {
       return res.status(404).json({
         success: false,
-        error: 'Target client account not found.',
+        error: 'Target client account not found. Please provide a valid client ID or name & phone number.',
       });
     }
 
@@ -137,8 +183,9 @@ export const createClientDeposit = async (
       }
     }
 
-    // 3. Calculate bonus based on Client's custom bonusPercentage
-    const bonusRate = client.bonusPercentage ?? 10.0;
+    // 3. Calculate bonus: automatically applies the running daily bonus rate set by superadmin (defaults to 0% if none set)
+    const dailyBonusInfo = await getRunningDailyBonusRate();
+    const bonusRate = dailyBonusInfo.isActive ? dailyBonusInfo.percentage : 0.0;
     const calculatedBonusPaise = Math.round((parsedAmountPaise * bonusRate) / 100);
     const totalCreditPaise = parsedAmountPaise + calculatedBonusPaise;
 
@@ -157,10 +204,17 @@ export const createClientDeposit = async (
           imageUrl: imageUrl || screenshotUri || null,
           paymentApp: paymentApp || (isOcrSubmission ? 'UPI OCR' : 'Direct Deposit'),
           rawOcrData: rawOcrData
-            ? { ...(typeof rawOcrData === 'object' ? rawOcrData : {}), notes: notes || undefined }
-            : notes
-            ? { notes }
-            : undefined,
+            ? {
+                ...(typeof rawOcrData === 'object' ? rawOcrData : {}),
+                notes: notes || undefined,
+                dailyBonusApplied: bonusRate,
+                dailyBonusDate: dailyBonusInfo.date,
+              }
+            : {
+                notes: notes || undefined,
+                dailyBonusApplied: bonusRate,
+                dailyBonusDate: dailyBonusInfo.date,
+              },
           processedByAdminId: req.user.userId,
           processedByName: req.user.name,
         },
@@ -184,6 +238,7 @@ export const createClientDeposit = async (
           totalBalancePaise: {
             increment: totalCreditPaise,
           },
+          bonusPercentage: bonusRate,
         },
         select: {
           id: true,
@@ -297,41 +352,54 @@ export const createClientWithdrawal = async (
       });
     }
 
-    // 2. Compute total approved deposit principal
-    const depositAggregate = await prisma.transaction.aggregate({
-      where: {
-        userId: client.id,
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.APPROVED,
-      },
-      _sum: { amountPaise: true },
-    });
+    // 2. Fetch last approved deposit and aggregate stats to find active bonus
+    const [lastDeposit, depositAggregate] = await Promise.all([
+      prisma.transaction.findFirst({
+        where: {
+          userId: client.id,
+          type: TransactionType.DEPOSIT,
+          status: TransactionStatus.APPROVED,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.transaction.aggregate({
+        where: {
+          userId: client.id,
+          type: TransactionType.DEPOSIT,
+          status: TransactionStatus.APPROVED,
+        },
+        _sum: { amountPaise: true, bonusPaise: true },
+      }),
+    ]);
+
     const totalDepositPrincipalPaise = depositAggregate._sum.amountPaise || 0;
+    const totalBonusCreditedPaise = depositAggregate._sum.bonusPaise || 0;
+    const lastDepositBonusPaise = lastDeposit?.bonusPaise || 0;
 
-    // 3. Rule-Based Threshold Enforcement
-    const isThresholdReached =
-      client.totalBalancePaise >= client.bonusThresholdLimitPaise;
-    const maxWithdrawablePaise = isThresholdReached
-      ? Math.min(client.totalBalancePaise, totalDepositPrincipalPaise)
-      : client.totalBalancePaise;
+    // Active bonus attached to client (from last deposit or available unwithdrawn bonus)
+    const activeBonusPaise =
+      lastDepositBonusPaise > 0
+        ? lastDepositBonusPaise
+        : Math.min(totalBonusCreditedPaise, client.totalBalancePaise);
 
-    if (parsedAmountPaise > maxWithdrawablePaise) {
-      return res.status(400).json({
-        success: false,
-        error: `Requested withdrawal ₹${(parsedAmountPaise / 100).toFixed(
-          2
-        )} exceeds ${client.name}'s eligible withdrawable cash limit of ₹${(
-          maxWithdrawablePaise / 100
-        ).toFixed(2)}. Because total balance (₹${(
-          client.totalBalancePaise / 100
-        ).toFixed(2)}) reached/exceeded threshold limit (₹${(
-          client.bonusThresholdLimitPaise / 100
-        ).toFixed(2)}), bonus points are excluded.`,
-        isThresholdReached,
-        maxWithdrawablePaise,
-        totalDepositPrincipalPaise,
-      });
-    }
+    // 3. Rule-Based Threshold Start Limit Enforcement:
+    // If requested withdrawal >= client's threshold start limit:
+    //   Threshold triggers! The active bonus cannot be withdrawn in cash:
+    //   bonusExcludedPaise = min(activeBonusPaise, parsedAmountPaise)
+    //   actualPayoutPaise = parsedAmountPaise - bonusExcludedPaise
+    // If requested withdrawal < threshold start limit:
+    //   Threshold does NOT trigger! Full requested amount is withdrawable without deduction:
+    //   bonusExcludedPaise = 0
+    //   actualPayoutPaise = parsedAmountPaise
+    const thresholdStartLimitPaise = client.bonusThresholdLimitPaise;
+    const isThresholdApplied =
+      parsedAmountPaise >= thresholdStartLimitPaise && activeBonusPaise > 0;
+
+    const bonusExcludedPaise = isThresholdApplied
+      ? Math.min(activeBonusPaise, parsedAmountPaise)
+      : 0;
+
+    const actualPayoutPaise = parsedAmountPaise - bonusExcludedPaise;
 
     const paymentAppStr = upiId
       ? `UPI: ${upiId}`
@@ -343,6 +411,12 @@ export const createClientWithdrawal = async (
       ...(bankDetails || {}),
       upiId: upiId || null,
       notes: notes || null,
+      requestedAmountPaise: parsedAmountPaise,
+      thresholdStartLimitPaise,
+      isThresholdApplied,
+      activeBonusPaise,
+      bonusExcludedPaise,
+      actualPayoutPaise,
     };
 
     // 4. AUTO-ACCEPT Atomic Transaction: Create APPROVED withdrawal & debit client balance
@@ -352,9 +426,9 @@ export const createClientWithdrawal = async (
           userId: client.id,
           type: TransactionType.WITHDRAWAL,
           status: TransactionStatus.APPROVED,
-          amountPaise: parsedAmountPaise,
-          bonusPaise: 0,
-          withdrawablePaise: maxWithdrawablePaise,
+          amountPaise: parsedAmountPaise, // Requested debited amount
+          bonusPaise: bonusExcludedPaise, // Bonus excluded from cashout
+          withdrawablePaise: actualPayoutPaise, // Actual net cash payout sent
           paymentApp: paymentAppStr,
           rejectionReason: notes || null,
           rawOcrData: rawData,
@@ -392,15 +466,27 @@ export const createClientWithdrawal = async (
 
     return res.status(201).json({
       success: true,
-      message: `Payout auto-accepted! Debited ₹${(parsedAmountPaise / 100).toFixed(
-        2
-      )} from ${updatedClient.name}. New balance: ₹${(
-        updatedClient.totalBalancePaise / 100
-      ).toFixed(2)}.`,
+      message: isThresholdApplied
+        ? `Withdrawal processed! Requested ₹${(parsedAmountPaise / 100).toFixed(
+            2
+          )}. Threshold start limit (₹${(thresholdStartLimitPaise / 100).toFixed(
+            2
+          )}) applied: ₹${(bonusExcludedPaise / 100).toFixed(
+            2
+          )} bonus was excluded. Net payout to ${updatedClient.name} is ₹${(
+            actualPayoutPaise / 100
+          ).toFixed(2)}.`
+        : `Withdrawal processed! Paid out ₹${(actualPayoutPaise / 100).toFixed(
+            2
+          )} to ${updatedClient.name}.`,
       transaction,
+      requestedAmountPaise: parsedAmountPaise,
+      bonusExcludedPaise,
+      actualPayoutPaise,
+      withdrawablePaise: actualPayoutPaise,
+      isThresholdApplied,
+      thresholdStartLimitPaise,
       clientNewBalancePaise: updatedClient.totalBalancePaise,
-      withdrawablePaise: maxWithdrawablePaise,
-      isThresholdReached,
     });
   } catch (error: any) {
     console.error('Error in createClientWithdrawal:', error);
@@ -556,6 +642,83 @@ export const getAdminStats = async (
     return res.status(500).json({
       success: false,
       error: 'Failed to retrieve operational statistics.',
+    });
+  }
+};
+
+/**
+ * GET /api/admin/daily-bonus
+ * Returns the active daily running bonus configuration.
+ */
+export const getDailyBonusConfig = async (
+  _req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    const dailyInfo = await getRunningDailyBonusRate();
+    return res.status(200).json({
+      success: true,
+      ...dailyInfo,
+      message: dailyInfo.isActive
+        ? `Today's running bonus rate is ${dailyInfo.percentage}%.`
+        : 'No bonus is currently active for today (0%).',
+    });
+  } catch (error: any) {
+    console.error('Error fetching daily bonus config:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve daily bonus configuration.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/daily-bonus
+ * Super Admin ONLY: Set the running bonus rate for the day.
+ */
+export const updateDailyBonusConfig = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user || !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only Super Admin can configure daily running bonus rates.',
+      });
+    }
+
+    const { percentage, isActive = true } = req.body;
+    const parsedRate = Number(percentage);
+    if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Bonus percentage must be between 0% and 100%.',
+      });
+    }
+
+    const record = await setRunningDailyBonusRate(
+      parsedRate,
+      req.user.userId,
+      req.user.name,
+      Boolean(isActive)
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Daily running bonus successfully set to ${parsedRate}% (${
+        isActive ? 'Active' : 'Inactive'
+      }).`,
+      dailyBonus: record,
+      percentage: parsedRate,
+      isActive: Boolean(isActive),
+      date: record.date,
+    });
+  } catch (error: any) {
+    console.error('Error updating daily bonus config:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to update daily bonus configuration.',
     });
   }
 };

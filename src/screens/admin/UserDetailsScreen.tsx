@@ -408,36 +408,34 @@ export const UserDetailsScreen = () => {
         {/* Client Wallet Breakdown */}
         {!isEmployee && (
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Client Balance & Withdrawable Cash</Text>
+            <Text style={styles.sectionTitle}>Client Balance & Threshold Metrics</Text>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Total Balance Points</Text>
+              <Text style={styles.metricLabel}>Total Wallet Balance</Text>
               <Text style={[styles.metricValue, { color: colors.primary }]}>
                 {formatPaiseToINR(account.totalBalancePaise || 0)}
               </Text>
             </View>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Total Approved Principal</Text>
+              <Text style={styles.metricLabel}>Total Deposited Principal</Text>
               <Text style={styles.metricValue}>
                 {formatPaiseToINR(account.totalDepositPrincipalPaise || 0)}
               </Text>
             </View>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Eligible Withdrawable Cash</Text>
-              <Text style={[styles.metricValue, { color: '#15803D' }]}>
-                {formatPaiseToINR(account.withdrawablePaise ?? account.totalBalancePaise ?? 0)}
+              <Text style={styles.metricLabel}>Threshold Start Limit</Text>
+              <Text style={[styles.metricValue, { color: '#B45309' }]}>
+                {formatPaiseToINR(account.bonusThresholdLimitPaise ?? 1500000)}
               </Text>
             </View>
             <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
-              <Text style={styles.metricLabel}>Threshold Status</Text>
+              <Text style={styles.metricLabel}>Threshold Rule</Text>
               <Text
                 style={[
                   styles.metricValue,
-                  { color: account.isThresholdReached ? '#B45309' : '#15803D' },
+                  { color: '#15803D' },
                 ]}
               >
-                {account.isThresholdReached
-                  ? 'Limit Reached (Bonus Excluded)'
-                  : 'Below Limit (Full Eligible)'}
+                Active on withdrawals ≥ {formatPaiseToINR(account.bonusThresholdLimitPaise ?? 1500000)}
               </Text>
             </View>
           </View>
