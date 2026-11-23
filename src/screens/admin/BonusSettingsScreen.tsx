@@ -47,6 +47,7 @@ export const BonusSettingsScreen = () => {
 
   // Simulator State
   const [simMode, setSimMode] = useState<'WITHDRAWAL' | 'DEPOSIT'>('WITHDRAWAL');
+  const [simDepositAmount, setSimDepositAmount] = useState('20000');
   const [depositSimAmount, setDepositSimAmount] = useState('20000');
   const [withdrawalSimAmount, setWithdrawalSimAmount] = useState('15000');
 
@@ -95,16 +96,25 @@ export const BonusSettingsScreen = () => {
   const depositSimPaise = rupeesToPaise(depositSimAmount || '0');
   const depositPreview = calculateDepositPreview(depositSimPaise, effectivePercentage);
 
-  // Withdrawal Simulation Calculations (Sample Client: ₹22,000 balance with ₹2,000 bonus)
-  const sampleBalanceRupees = 22000;
-  const sampleBonusRupees = 2000;
+  // Dynamic Withdrawal Simulation Calculations:
+  // Bonus excluded is NOT a fixed amount; it is dynamically calculated from the
+  // exact bonus percentage allocated on the client's deposit!
+  const simDepositRupees = parseFloat(simDepositAmount || '0');
+  const simAllocatedBonusRupees =
+    isBonusActive && percentage > 0
+      ? Math.round((simDepositRupees * percentage) / 100)
+      : 0;
+  const sampleBalanceRupees = simDepositRupees + simAllocatedBonusRupees;
+
   const simWithdrawalRupees = parseFloat(withdrawalSimAmount || '0');
   const isSimThresholdApplied =
     isThresholdActive &&
     thresholdLimit > 0 &&
-    simWithdrawalRupees >= thresholdLimit;
+    simWithdrawalRupees >= thresholdLimit &&
+    simAllocatedBonusRupees > 0;
+
   const simBonusExcluded = isSimThresholdApplied
-    ? Math.min(sampleBonusRupees, simWithdrawalRupees)
+    ? Math.min(simAllocatedBonusRupees, simWithdrawalRupees)
     : 0;
   const simNetCashPayout = Math.max(0, simWithdrawalRupees - simBonusExcluded);
 
@@ -388,16 +398,68 @@ export const BonusSettingsScreen = () => {
 
           {simMode === 'WITHDRAWAL' ? (
             <View style={{ marginTop: 14 }}>
-              <View style={styles.simContextBox}>
-                <Text style={styles.simContextTitle}>
-                  Sample Client Balance: ₹{sampleBalanceRupees.toLocaleString('en-IN')} (Principal: ₹20,000 + Bonus: ₹2,000)
-                </Text>
-                <Text style={styles.simContextSub}>
-                  Running Daily Threshold Limit: ₹{thresholdLimit.toLocaleString('en-IN')}
-                </Text>
+              {/* Sample Deposit Input to test any deposit amount & bonus % */}
+              <Text style={styles.simLabel}>Sample Client Deposit Amount (₹):</Text>
+              <View style={styles.simInputBox}>
+                <Text style={styles.simCurrency}>₹</Text>
+                <TextInput
+                  style={styles.simInput}
+                  keyboardType="numeric"
+                  value={simDepositAmount}
+                  onChangeText={(text) => {
+                    const cleaned = text.replace(/[^0-9]/g, '');
+                    setSimDepositAmount(cleaned);
+                  }}
+                />
               </View>
 
-              <Text style={styles.simLabel}>Test Withdrawal Amount (₹):</Text>
+              <View style={[styles.chipsRow, { marginBottom: 12 }]}>
+                {[10000, 20000, 30000, 50000].map((amt) => (
+                  <TouchableOpacity
+                    key={amt}
+                    style={[
+                      styles.chip,
+                      simDepositRupees === amt && styles.chipSelected,
+                    ]}
+                    onPress={() => setSimDepositAmount(String(amt))}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        simDepositRupees === amt && styles.chipTextSelected,
+                      ]}
+                    >
+                      ₹{(amt / 1000).toFixed(0)}k
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.simContextBox}>
+                <View style={styles.simContextRow}>
+                  <Text style={styles.simContextLabel}>Deposit Principal:</Text>
+                  <Text style={styles.simContextVal}>₹{simDepositRupees.toLocaleString('en-IN')}</Text>
+                </View>
+                <View style={styles.simContextRow}>
+                  <Text style={styles.simContextLabel}>
+                    Allocated Bonus ({isBonusActive ? `${percentage}%` : '0%'}):
+                  </Text>
+                  <Text style={[styles.simContextVal, { color: '#D97706', fontWeight: '800' }]}>
+                    +₹{simAllocatedBonusRupees.toLocaleString('en-IN')}
+                  </Text>
+                </View>
+                <View style={[styles.previewDivider, { marginVertical: 4 }]} />
+                <View style={styles.simContextRow}>
+                  <Text style={[styles.simContextLabel, { fontWeight: '700', color: colors.text }]}>
+                    Total Wallet Balance:
+                  </Text>
+                  <Text style={[styles.simContextVal, { fontWeight: '800', color: colors.primary }]}>
+                    ₹{sampleBalanceRupees.toLocaleString('en-IN')}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={[styles.simLabel, { marginTop: 6 }]}>Test Withdrawal Amount (₹):</Text>
               <View style={styles.simInputBox}>
                 <Text style={styles.simCurrency}>₹</Text>
                 <TextInput
@@ -444,7 +506,7 @@ export const BonusSettingsScreen = () => {
                 ]}
               >
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>Threshold Status</Text>
+                  <Text style={styles.previewLabel}>Threshold Rule</Text>
                   <View
                     style={[
                       styles.statusPill,
@@ -462,8 +524,8 @@ export const BonusSettingsScreen = () => {
                       ]}
                     >
                       {isSimThresholdApplied
-                        ? `Threshold Applied (≥ ₹${thresholdLimit.toLocaleString('en-IN')})`
-                        : `Below Threshold (< ₹${thresholdLimit.toLocaleString('en-IN')})`}
+                        ? `Threshold Triggered (≥ ₹${thresholdLimit.toLocaleString('en-IN')})`
+                        : `No Threshold Applied (< ₹${thresholdLimit.toLocaleString('en-IN')})`}
                     </Text>
                   </View>
                 </View>
@@ -477,7 +539,7 @@ export const BonusSettingsScreen = () => {
 
                 <View style={styles.previewRow}>
                   <Text style={styles.previewLabel}>
-                    Promotional Bonus Retained in Wallet
+                    Allocated Bonus ({percentage}%) Retained in Wallet
                   </Text>
                   <Text
                     style={[
@@ -488,7 +550,7 @@ export const BonusSettingsScreen = () => {
                     ]}
                   >
                     {isSimThresholdApplied
-                      ? `-₹${simBonusExcluded.toLocaleString('en-IN')} (Bonus Excluded)`
+                      ? `-₹${simBonusExcluded.toLocaleString('en-IN')} (${percentage}% Bonus Excluded)`
                       : '₹0 (Full Amount Withdrawable)'}
                   </Text>
                 </View>
@@ -506,6 +568,12 @@ export const BonusSettingsScreen = () => {
                     ₹{simNetCashPayout.toLocaleString('en-IN')}
                   </Text>
                 </View>
+
+                {isSimThresholdApplied && (
+                  <Text style={[styles.simContextSub, { marginTop: 6, fontStyle: 'italic' }]}>
+                    * Notice: The excluded bonus is not a fixed ₹2,000. It dynamically equals the {percentage}% bonus allocated to the deposit (₹{simDepositRupees.toLocaleString('en-IN')} × {percentage}% = ₹{simAllocatedBonusRupees.toLocaleString('en-IN')}).
+                  </Text>
+                )}
               </View>
             </View>
           ) : (
@@ -776,6 +844,22 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  simContextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 2,
+  },
+  simContextLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  simContextVal: {
+    fontSize: 12,
+    color: colors.text,
+    fontWeight: '700',
   },
   simContextTitle: {
     fontSize: 11,

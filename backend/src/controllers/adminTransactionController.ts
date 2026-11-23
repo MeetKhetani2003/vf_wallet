@@ -381,11 +381,18 @@ export const createClientWithdrawal = async (
     const totalBonusCreditedPaise = depositAggregate._sum.bonusPaise || 0;
     const lastDepositBonusPaise = lastDeposit?.bonusPaise || 0;
 
-    // Active bonus attached to client (from last deposit or available unwithdrawn bonus)
-    const activeBonusPaise =
+    // Active bonus attached to client based on the deposit bonus percentage allocated:
+    let activeBonusPaise =
       lastDepositBonusPaise > 0
         ? lastDepositBonusPaise
         : Math.min(totalBonusCreditedPaise, client.totalBalancePaise);
+
+    // If no previous deposit record, calculate bonus portion from client's allocated bonus percentage
+    if (activeBonusPaise <= 0 && client.bonusPercentage > 0 && client.totalBalancePaise > 0) {
+      activeBonusPaise = Math.round(
+        (client.totalBalancePaise * client.bonusPercentage) / (100 + client.bonusPercentage)
+      );
+    }
 
     // 3. Rule-Based Threshold Start Limit Enforcement:
     // If requested withdrawal >= client's threshold start limit:

@@ -72,6 +72,7 @@ export const ClientWithdrawScreen = () => {
           bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
           totalBalancePaise: u.totalBalancePaise || 0,
           totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
+          allocatedBonusPaise: u.allocatedBonusPaise || 0,
           withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
           isThresholdReached: Boolean(u.isThresholdReached),
         }));
@@ -135,10 +136,13 @@ export const ClientWithdrawScreen = () => {
     selectedClient?.bonusThresholdLimitPaise ?? 1500000; // Default ₹15,000
   const clientBonusPct = selectedClient?.bonusPercentage ?? 10.0;
 
-  // Active bonus attached to client's account
+  // Active allocated deposit bonus attached to client's account
+  // (dynamically based on the deposit bonus percentage allocated to this client):
   const activeBonusPaise =
-    selectedClient && principalPaise > 0
-      ? Math.max(0, totalBalancePaise - principalPaise)
+    selectedClient?.allocatedBonusPaise !== undefined && selectedClient.allocatedBonusPaise > 0
+      ? selectedClient.allocatedBonusPaise
+      : selectedClient && principalPaise > 0 && totalBalancePaise > principalPaise
+      ? totalBalancePaise - principalPaise
       : Math.round(
           (totalBalancePaise * clientBonusPct) / (100 + clientBonusPct)
         );

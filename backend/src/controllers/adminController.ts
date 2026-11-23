@@ -10,12 +10,26 @@ import {
 } from '../utils/permissions';
 import { getRunningDailyBonusRate } from '../utils/dailyBonus';
 
-const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
+const formatManagedUser = (
+  user: any,
+  totalDepositPrincipalPaise?: number,
+  allocatedBonusPaise?: number
+) => {
   const principal = totalDepositPrincipalPaise ?? 0;
+  const bonusPaise =
+    allocatedBonusPaise !== undefined && allocatedBonusPaise > 0
+      ? allocatedBonusPaise
+      : principal > 0 && user.totalBalancePaise > principal
+      ? user.totalBalancePaise - principal
+      : Math.round(
+          (user.totalBalancePaise * (user.bonusPercentage || 0)) /
+            (100 + (user.bonusPercentage || 0))
+        );
+
   const isThresholdReached =
     user.totalBalancePaise >= user.bonusThresholdLimitPaise;
   const withdrawablePaise = isThresholdReached
-    ? Math.min(user.totalBalancePaise, principal)
+    ? Math.max(0, user.totalBalancePaise - bonusPaise)
     : user.totalBalancePaise;
 
   return {
@@ -38,6 +52,7 @@ const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
     thresholdStartLimitRupees: user.bonusThresholdLimitPaise / 100,
     totalBalancePaise: user.totalBalancePaise,
     totalDepositPrincipalPaise: principal,
+    allocatedBonusPaise: bonusPaise,
     withdrawablePaise,
     isThresholdReached,
     upiId: user.upiId || null,
@@ -327,13 +342,15 @@ export const getAllUsers = async (req: AuthenticatedRequest, res: Response) => {
               type: TransactionType.DEPOSIT,
               status: TransactionStatus.APPROVED,
             },
-            _sum: { amountPaise: true },
+            _sum: { amountPaise: true, bonusPaise: true },
           })
         : [];
 
     const principalMap = new Map<string, number>();
+    const bonusMap = new Map<string, number>();
     for (const d of depositSums) {
       principalMap.set(d.userId, d._sum.amountPaise || 0);
+      bonusMap.set(d.userId, d._sum.bonusPaise || 0);
     }
 
     return res.status(200).json({
@@ -343,7 +360,11 @@ export const getAllUsers = async (req: AuthenticatedRequest, res: Response) => {
       limit: limitNum,
       totalPages: Math.ceil(totalUsers / limitNum),
       users: users.map((u) =>
-        formatManagedUser(u, principalMap.get(u.id) || 0)
+        formatManagedUser(
+          u,
+          principalMap.get(u.id) || 0,
+          bonusMap.get(u.id) || 0
+        )
       ),
     });
   } catch (error: any) {

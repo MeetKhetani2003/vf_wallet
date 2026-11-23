@@ -39,6 +39,7 @@ export interface User {
   bonusThresholdLimitPaise?: number;
   totalBalancePaise?: number;
   totalDepositPrincipalPaise?: number;
+  allocatedBonusPaise?: number;
   withdrawablePaise?: number;
   isThresholdReached?: boolean;
 }
