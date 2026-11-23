@@ -170,15 +170,16 @@ export const UserManagementScreen = () => {
     loadAccounts();
   }, [loadAccounts]);
 
-  const openCreateModal = () => {
-    setCreateType(isSuperAdmin ? activeSegment : 'CLIENT');
+  const openCreateModal = (typeOverride?: 'CLIENT' | 'EMPLOYEE') => {
+    const chosenType = typeOverride ?? (isSuperAdmin ? activeSegment : 'CLIENT');
+    setCreateType(chosenType);
     setName('');
     setPhone('');
     setEmail('');
     setUpiId('');
     setPassword('');
     setBonusPercentage('10.0');
-    setBonusThresholdLimit('10000');
+    setBonusThresholdLimit('15000');
     setEmpPermissions({ ...DEFAULT_PERMS });
     setFormError('');
     setModalVisible(true);
@@ -236,14 +237,16 @@ export const UserManagementScreen = () => {
       const payload: any = {
         name: name.trim(),
         phone: phone.trim(),
-        email: email.trim() || undefined,
         userType: createType,
+        role: createType,
       };
 
       if (createType === 'EMPLOYEE') {
+        payload.email = email.trim() || undefined;
         payload.password = password.trim();
         payload.permissions = empPermissions;
       } else {
+        // Clients strictly require NO password and NO login credentials
         payload.upiId = upiId.trim() || undefined;
         if (canSetBonus) payload.bonusPercentage = parsedBonus;
         if (canSetThreshold) payload.bonusThresholdLimit = parsedLimit;
@@ -421,7 +424,7 @@ export const UserManagementScreen = () => {
         {(isSuperAdmin || (activeSegment === 'CLIENT' && canCreateClient)) && (
           <TouchableOpacity
             style={styles.addUserButton}
-            onPress={openCreateModal}
+            onPress={() => openCreateModal(activeSegment)}
             activeOpacity={0.8}
           >
             <View
@@ -430,20 +433,22 @@ export const UserManagementScreen = () => {
                 activeSegment === 'EMPLOYEE' && { backgroundColor: '#7C3AED' },
               ]}
             >
-              <Ionicons name="person-add" size={18} color={colors.white} />
+              <Ionicons
+                name={activeSegment === 'EMPLOYEE' ? 'shield-checkmark' : 'person-add'}
+                size={18}
+                color={colors.white}
+              />
             </View>
             <View style={styles.addUserTextCol}>
               <Text style={styles.addUserTitle}>
-                {isSuperAdmin
-                  ? activeSegment === 'EMPLOYEE'
-                    ? 'Create New Employee'
-                    : 'Create New Client or Employee'
+                {activeSegment === 'EMPLOYEE'
+                  ? 'Create New Employee'
                   : 'Create New Client'}
               </Text>
               <Text style={styles.addUserSubtitle}>
                 {activeSegment === 'EMPLOYEE'
                   ? 'Set login credentials & granular role permissions'
-                  : 'Add client account with custom bonus % & threshold'}
+                  : 'Name & Phone only — No password required'}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.primary} />
@@ -656,10 +661,15 @@ export const UserManagementScreen = () => {
               {createType === 'CLIENT' ? (
                 <>
                   <View style={styles.noLoginBadge}>
-                    <Ionicons name="information-circle" size={16} color={colors.primary} />
-                    <Text style={styles.noLoginBadgeText}>
-                      Client info requires only Name & Phone. Daily running bonus automatically applies to deposits.
-                    </Text>
+                    <Ionicons name="shield-checkmark" size={18} color="#15803D" />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={[styles.noLoginBadgeText, { fontWeight: '700', color: '#166534' }]}>
+                        No Password Required
+                      </Text>
+                      <Text style={[styles.noLoginBadgeText, { marginTop: 2 }]}>
+                        Clients do not log in. Only Full Name & 10-digit Phone number are required.
+                      </Text>
+                    </View>
                   </View>
 
                   {canSetThreshold && (

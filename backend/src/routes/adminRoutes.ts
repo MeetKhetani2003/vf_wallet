@@ -35,8 +35,9 @@ router.use(requireStaff);
 router.get('/stats', getAdminStats);
 
 // Client & Employee Account Management Routes
-// POST /api/admin/users/create (Super Admin creates Client or Employee; Employee with canManageClients creates Client)
+// POST /api/admin/users/create or /api/admin/users (Super Admin creates Client or Employee; Employee with canManageClients creates Client)
 router.post('/users/create', createUser);
+router.post('/users', createUser);
 
 // GET /api/admin/users (Clients for all staff; Employees for Super Admin only)
 router.get('/users', getAllUsers);
