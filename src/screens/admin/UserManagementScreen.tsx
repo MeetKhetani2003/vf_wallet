@@ -11,8 +11,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Switch,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -23,206 +24,438 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { PrimaryButton } from '../../components/buttons/PrimaryButton';
 import { SecondaryButton } from '../../components/buttons/SecondaryButton';
 import { adminApi } from '../../services/api';
-import { storageService } from '../../services/storageService';
+import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
-import { calculateUserWallet } from '../../utils/calculations';
-import { User, UserWalletSummary } from '../../types';
+import { User, EmployeePermissions, UserWalletSummary } from '../../types';
+
+const PERMISSION_DEFINITIONS: Array<{
+  key: keyof EmployeePermissions;
+  title: string;
+  desc: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}> = [
+  {
+    key: 'canOcrUpload',
+    title: 'OCR Upload (Selected Client)',
+    desc: 'Scan client payment screenshot & auto-credit deposit',
+    icon: 'scan-outline',
+  },
+  {
+    key: 'canDeposit',
+    title: 'Direct Deposit',
+    desc: 'Credit manual deposits directly to clients',
+    icon: 'arrow-down-circle-outline',
+  },
+  {
+    key: 'canWithdraw',
+    title: 'Client Withdrawal',
+    desc: 'Process rule-based instant payouts for clients',
+    icon: 'arrow-up-circle-outline',
+  },
+  {
+    key: 'canSetBonus',
+    title: 'Set Client Bonus %',
+    desc: 'Configure custom deposit bonus percentage per client',
+    icon: 'gift-outline',
+  },
+  {
+    key: 'canSetThreshold',
+    title: 'Set Threshold Limit',
+    desc: 'Configure withdrawal threshold limit per client',
+    icon: 'shield-outline',
+  },
+  {
+    key: 'canManageClients',
+    title: 'Manage Client Data',
+    desc: 'Create, edit, update UPI/bank & block/unblock clients',
+    icon: 'people-outline',
+  },
+];
+
+const DEFAULT_PERMS: EmployeePermissions = {
+  canOcrUpload: true,
+  canDeposit: false,
+  canWithdraw: false,
+  canSetBonus: false,
+  canSetThreshold: false,
+  canManageClients: false,
+};
+
+type RouteParams = {
+  Users?: {
+    initialTab?: 'CLIENT' | 'EMPLOYEE';
+  };
+};
 
 export const UserManagementScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { transactions } = useWallet();
+  const route = useRoute<RouteProp<RouteParams, 'Users'>>();
+  const { isSuperAdmin, permissions } = useAuth();
+  const { refreshData } = useWallet();
 
-  const [users, setUsers] = useState<User[]>([]);
+  const canCreateClient = isSuperAdmin || permissions.canManageClients;
+  const canSetBonus = isSuperAdmin || permissions.canSetBonus;
+  const canSetThreshold = isSuperAdmin || permissions.canSetThreshold;
+
+  const [activeSegment, setActiveSegment] = useState<'CLIENT' | 'EMPLOYEE'>(
+    route.params?.initialTab === 'EMPLOYEE' && isSuperAdmin ? 'EMPLOYEE' : 'CLIENT'
+  );
+
+  const [accounts, setAccounts] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'blocked'>('all');
 
-  // Create User Modal State
+  // Create Modal State
   const [modalVisible, setModalVisible] = useState(false);
+  const [createType, setCreateType] = useState<'CLIENT' | 'EMPLOYEE'>('CLIENT');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [upiId, setUpiId] = useState('');
   const [password, setPassword] = useState('');
   const [bonusPercentage, setBonusPercentage] = useState('10.0');
   const [bonusThresholdLimit, setBonusThresholdLimit] = useState('10000');
+  const [empPermissions, setEmpPermissions] =
+    useState<EmployeePermissions>({ ...DEFAULT_PERMS });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
-  /**
-   * Fetches live user list from GET /api/admin/users
-   */
-  const loadUsers = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setIsLoading(true);
+  const loadAccounts = useCallback(
+    async (isRefresh = false) => {
+      if (isRefresh) setRefreshing(true);
+      else setIsLoading(true);
 
-    try {
-      const res = await adminApi.getUsers({
-        role: 'USER',
-      });
+      try {
+        const res = await adminApi.getUsers({
+          role: activeSegment,
+        });
 
-      if (res.success && res.users) {
-        const mappedUsers: User[] = res.users.map((u: any) => ({
-          id: u.id,
-          name: u.name,
-          phone: u.phone,
-          email: u.email || `${u.phone}@vfwallet.local`,
-          role: 'user',
-          status: u.isBlocked ? 'blocked' : 'active',
-          createdAt: u.createdAt,
-          bonusPercentage: u.bonusPercentage ?? 10.0,
-          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
-          totalBalancePaise: u.totalBalancePaise || 0,
-        }));
-        setUsers(mappedUsers);
-      } else {
-        console.warn('Failed to fetch live users:', res.error);
-        const local = await storageService.getUsers();
-        if (local && local.length > 0) {
-          setUsers(local);
+        if (res.success && Array.isArray(res.users)) {
+          const mapped: User[] = res.users.map((u: any) => ({
+            id: u.id,
+            name: u.name,
+            phone: u.phone,
+            email: u.email || '',
+            role: 'user',
+            accountType: u.accountType || activeSegment,
+            permissions: u.permissions,
+            status: u.isBlocked ? 'blocked' : 'active',
+            createdAt: u.createdAt,
+            upiId: u.upiId || undefined,
+            bankAccount: u.bankAccount || undefined,
+            bonusPercentage: u.bonusPercentage ?? 10.0,
+            bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+            totalBalancePaise: u.totalBalancePaise || 0,
+            totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
+            withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
+            isThresholdReached: Boolean(u.isThresholdReached),
+          }));
+          setAccounts(mapped);
+        } else {
+          setAccounts([]);
         }
+      } catch (error) {
+        console.error('Error loading accounts:', error);
+      } finally {
+        setIsLoading(false);
+        setRefreshing(false);
       }
-    } catch (error) {
-      console.error('Error loading users:', error);
-      const local = await storageService.getUsers();
-      if (local && local.length > 0) {
-        setUsers(local);
-      }
-    } finally {
-      setIsLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [activeSegment]
+  );
 
   useEffect(() => {
-    loadUsers();
-  }, [loadUsers]);
+    loadAccounts();
+  }, [loadAccounts]);
 
-  const onRefresh = () => {
-    loadUsers(true);
+  const openCreateModal = () => {
+    setCreateType(isSuperAdmin ? activeSegment : 'CLIENT');
+    setName('');
+    setPhone('');
+    setEmail('');
+    setUpiId('');
+    setPassword('');
+    setBonusPercentage('10.0');
+    setBonusThresholdLimit('10000');
+    setEmpPermissions({ ...DEFAULT_PERMS });
+    setFormError('');
+    setModalVisible(true);
   };
 
-  /**
-   * Handles POST /api/admin/users/create
-   */
-  const handleCreateUser = async () => {
+  const togglePermission = (key: keyof EmployeePermissions) => {
+    setEmpPermissions((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const handleCreateAccount = async () => {
     setFormError('');
 
     if (!name.trim()) {
-      setFormError('Please enter user full name.');
+      setFormError('Please enter full name.');
       return;
     }
 
-    if (!phone.trim()) {
-      setFormError('Please enter user phone number.');
+    if (!phone.trim() || phone.trim().length < 10) {
+      setFormError('Please enter a valid 10-digit phone number.');
       return;
     }
 
-    if (!password || password.length < 4) {
-      setFormError('Password must be at least 4 characters long.');
-      return;
+    if (createType === 'EMPLOYEE') {
+      if (!password || password.trim().length < 4) {
+        setFormError('Employee login password must be at least 4 characters.');
+        return;
+      }
     }
 
     const parsedBonus = parseFloat(bonusPercentage);
-    if (isNaN(parsedBonus) || parsedBonus < 0 || parsedBonus > 100) {
-      setFormError('Bonus % must be a number between 0 and 100.');
+    if (
+      createType === 'CLIENT' &&
+      canSetBonus &&
+      (isNaN(parsedBonus) || parsedBonus < 0 || parsedBonus > 100)
+    ) {
+      setFormError('Bonus % must be between 0 and 100.');
       return;
     }
 
     const parsedLimit = parseFloat(bonusThresholdLimit);
-    if (isNaN(parsedLimit) || parsedLimit < 0) {
-      setFormError('Bonus threshold limit must be a positive number.');
+    if (
+      createType === 'CLIENT' &&
+      canSetThreshold &&
+      (isNaN(parsedLimit) || parsedLimit < 0)
+    ) {
+      setFormError('Threshold limit must be a positive number.');
       return;
     }
 
     setIsSubmitting(true);
-
     try {
-      const res = await adminApi.createUser({
+      const payload: any = {
         name: name.trim(),
         phone: phone.trim(),
-        password: password.trim(),
-        bonusPercentage: parsedBonus,
-        bonusThresholdLimit: parsedLimit,
-      });
+        email: email.trim() || undefined,
+        userType: createType,
+      };
+
+      if (createType === 'EMPLOYEE') {
+        payload.password = password.trim();
+        payload.permissions = empPermissions;
+      } else {
+        payload.upiId = upiId.trim() || undefined;
+        if (canSetBonus) payload.bonusPercentage = parsedBonus;
+        if (canSetThreshold) payload.bonusThresholdLimit = parsedLimit;
+      }
+
+      const res = await adminApi.createUser(payload);
 
       if (res.success) {
         Alert.alert(
-          'User Created Successfully! 🎉',
-          `Account for ${name.trim()} (${phone.trim()}) is active with ${parsedBonus}% cashback bonus.`
+          createType === 'EMPLOYEE'
+            ? 'Employee Created! 🛡️'
+            : 'Client Created! ✅',
+          createType === 'EMPLOYEE'
+            ? `Employee "${name.trim()}" can now log in with phone ${phone.trim()} and their assigned permissions.`
+            : `Client "${name.trim()}" (${phone.trim()}) has been added with ${
+                canSetBonus ? parsedBonus : 10
+              }% bonus (no login required).`
         );
-
-        // Reset form and close modal
-        setName('');
-        setPhone('');
-        setPassword('');
-        setBonusPercentage('10.0');
-        setBonusThresholdLimit('10000');
         setModalVisible(false);
-
-        // Refresh user list from live backend
-        await loadUsers(true);
+        if (activeSegment !== createType) {
+          setActiveSegment(createType);
+        } else {
+          await loadAccounts(true);
+        }
+        await refreshData();
       } else {
-        setFormError(res.error || 'Failed to create user. Please check credentials.');
+        setFormError(res.error || 'Failed to create account.');
       }
     } catch (err: any) {
-      setFormError(err.message || 'An error occurred while creating user.');
+      setFormError(err?.message || 'An error occurred.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Client-side search and filtering
-  const filteredUsers = users.filter((u) => {
-    if (statusFilter !== 'all' && u.status !== statusFilter) {
-      return false;
-    }
+  const filteredAccounts = accounts.filter((u) => {
+    if (statusFilter !== 'all' && u.status !== statusFilter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      const matchName = u.name.toLowerCase().includes(q);
-      const matchId = u.id.toLowerCase().includes(q);
-      const matchPhone = u.phone.includes(q);
-      return matchName || matchId || matchPhone;
+      return (
+        u.name.toLowerCase().includes(q) ||
+        u.phone.includes(q) ||
+        (u.email && u.email.toLowerCase().includes(q))
+      );
     }
     return true;
   });
+
+  const renderEmployeeCard = (emp: User) => {
+    const perms = emp.permissions;
+    const activeLabels = PERMISSION_DEFINITIONS.filter(
+      (def) => perms && perms[def.key]
+    ).map((def) => def.title.split(' ')[0] + (def.key === 'canOcrUpload' ? ' OCR' : ''));
+
+    return (
+      <TouchableOpacity
+        key={emp.id}
+        style={styles.employeeCard}
+        onPress={() => navigation.navigate('UserDetails', { userId: emp.id })}
+        activeOpacity={0.75}
+      >
+        <View style={styles.empTopRow}>
+          <View style={styles.empAvatar}>
+            <Ionicons name="person" size={20} color="#7C3AED" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={styles.empNameRow}>
+              <Text style={styles.empName}>{emp.name}</Text>
+              <View
+                style={[
+                  styles.empStatusBadge,
+                  emp.status === 'blocked' && styles.empStatusBlocked,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.empStatusText,
+                    emp.status === 'blocked' && styles.empStatusBlockedText,
+                  ]}
+                >
+                  {emp.status === 'blocked' ? 'Blocked' : 'Active'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.empPhone}>
+              +91 {emp.phone} {emp.email ? `• ${emp.email}` : ''}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textLight} />
+        </View>
+
+        <View style={styles.permChipsRow}>
+          {activeLabels.length > 0 ? (
+            PERMISSION_DEFINITIONS.filter((d) => perms && perms[d.key]).map((d) => (
+              <View key={d.key} style={styles.permChip}>
+                <Ionicons name={d.icon} size={11} color="#6D28D9" />
+                <Text style={styles.permChipText}>{d.title}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.noPermChipText}>No permissions assigned yet</Text>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <ScreenContainer
       scrollable
       refreshing={refreshing}
-      onRefresh={onRefresh}
+      onRefresh={() => loadAccounts(true)}
       backgroundColor={colors.background}
     >
       <Header
-        title="User Management"
-        subtitle={`${users.length} live registered users`}
+        title={isSuperAdmin ? 'Clients & Employees' : 'Client Accounts'}
+        subtitle={
+          activeSegment === 'EMPLOYEE'
+            ? `${accounts.length} staff employees`
+            : `${accounts.length} managed clients (no login)`
+        }
       />
 
       <View style={styles.content}>
-        {/* Top Action Bar: Add User Button */}
-        <TouchableOpacity
-          style={styles.addUserButton}
-          onPress={() => setModalVisible(true)}
-          activeOpacity={0.8}
-        >
-          <View style={styles.addUserIconCircle}>
-            <Ionicons name="person-add" size={18} color={colors.white} />
+        {/* Super Admin Segment Switcher: Clients | Employees */}
+        {isSuperAdmin && (
+          <View style={styles.segmentContainer}>
+            <TouchableOpacity
+              style={[
+                styles.segmentBtn,
+                activeSegment === 'CLIENT' && styles.segmentBtnActive,
+              ]}
+              onPress={() => setActiveSegment('CLIENT')}
+            >
+              <Ionicons
+                name="people-outline"
+                size={16}
+                color={activeSegment === 'CLIENT' ? colors.white : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.segmentText,
+                  activeSegment === 'CLIENT' && styles.segmentTextActive,
+                ]}
+              >
+                Clients
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.segmentBtn,
+                activeSegment === 'EMPLOYEE' && styles.segmentBtnActiveEmp,
+              ]}
+              onPress={() => setActiveSegment('EMPLOYEE')}
+            >
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={16}
+                color={activeSegment === 'EMPLOYEE' ? colors.white : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.segmentText,
+                  activeSegment === 'EMPLOYEE' && styles.segmentTextActive,
+                ]}
+              >
+                Employees
+              </Text>
+            </TouchableOpacity>
           </View>
-          <View style={styles.addUserTextCol}>
-            <Text style={styles.addUserTitle}>Create New User</Text>
-            <Text style={styles.addUserSubtitle}>
-              Configure custom Cashback % & Threshold Limit
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.primary} />
-        </TouchableOpacity>
+        )}
+
+        {/* Create Button */}
+        {(isSuperAdmin || (activeSegment === 'CLIENT' && canCreateClient)) && (
+          <TouchableOpacity
+            style={styles.addUserButton}
+            onPress={openCreateModal}
+            activeOpacity={0.8}
+          >
+            <View
+              style={[
+                styles.addUserIconCircle,
+                activeSegment === 'EMPLOYEE' && { backgroundColor: '#7C3AED' },
+              ]}
+            >
+              <Ionicons name="person-add" size={18} color={colors.white} />
+            </View>
+            <View style={styles.addUserTextCol}>
+              <Text style={styles.addUserTitle}>
+                {isSuperAdmin
+                  ? activeSegment === 'EMPLOYEE'
+                    ? 'Create New Employee'
+                    : 'Create New Client or Employee'
+                  : 'Create New Client'}
+              </Text>
+              <Text style={styles.addUserSubtitle}>
+                {activeSegment === 'EMPLOYEE'
+                  ? 'Set login credentials & granular role permissions'
+                  : 'Add client account with custom bonus % & threshold'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        )}
 
         {/* Search Bar */}
         <View style={styles.searchBar}>
           <Ionicons name="search-outline" size={18} color={colors.textMuted} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by Name, ID or Phone..."
+            placeholder={`Search ${activeSegment === 'EMPLOYEE' ? 'employees' : 'clients'} by name or phone...`}
             placeholderTextColor={colors.textLight}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -234,24 +467,25 @@ export const UserManagementScreen = () => {
           ) : null}
         </View>
 
-        {/* Status Filters */}
+        {/* Status Filter Chips */}
         <View style={styles.filterRow}>
           {(['all', 'active', 'blocked'] as const).map((filter) => {
             const isSelected = statusFilter === filter;
-            const labels = {
-              all: `All Users (${users.length})`,
-              active: `Active (${users.filter((u) => u.status === 'active').length})`,
-              blocked: `Blocked (${users.filter((u) => u.status === 'blocked').length})`,
-            };
+            const count =
+              filter === 'all'
+                ? accounts.length
+                : accounts.filter((u) => u.status === filter).length;
+            const label =
+              filter === 'all'
+                ? `All (${count})`
+                : filter === 'active'
+                ? `Active (${count})`
+                : `Blocked (${count})`;
             return (
               <TouchableOpacity
                 key={filter}
-                style={[
-                  styles.filterChip,
-                  isSelected && styles.filterChipSelected,
-                ]}
+                style={[styles.filterChip, isSelected && styles.filterChipSelected]}
                 onPress={() => setStatusFilter(filter)}
-                activeOpacity={0.7}
               >
                 <Text
                   style={[
@@ -259,210 +493,292 @@ export const UserManagementScreen = () => {
                     isSelected && styles.filterChipTextSelected,
                   ]}
                 >
-                  {labels[filter]}
+                  {label}
                 </Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        {/* Users List */}
-        {isLoading && !refreshing ? (
-          <View style={styles.loadingContainer}>
+        {/* List */}
+        {isLoading ? (
+          <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Fetching live users from Neon DB...</Text>
+            <Text style={styles.loadingText}>Loading accounts...</Text>
           </View>
-        ) : (
-          <View style={styles.listContainer}>
-            {filteredUsers.length > 0 ? (
-              filteredUsers.map((user) => {
-                const walletSummary: UserWalletSummary = calculateUserWallet(
-                  user.id,
-                  transactions
-                );
-                // Override available balance with live balance from backend if present
-                if (user.totalBalancePaise !== undefined) {
-                  walletSummary.availableBalancePaise = user.totalBalancePaise;
-                }
-
-                return (
-                  <UserCard
-                    key={user.id}
-                    user={user}
-                    walletSummary={walletSummary}
-                    onPress={() =>
-                      navigation.navigate('UserDetails', {
-                        userId: user.id,
-                        userInitial: user,
-                      })
-                    }
-                  />
-                );
-              })
-            ) : (
-              <EmptyState
-                icon="account-search-outline"
-                title="No users found"
-                description={
-                  searchQuery
-                    ? 'No registered users match your search query.'
-                    : 'No users created yet. Tap "Create New User" to register a user.'
-                }
-                actionLabel={searchQuery ? 'Reset Search' : 'Create User'}
-                onAction={() => {
-                  if (searchQuery) {
-                    setSearchQuery('');
-                    setStatusFilter('all');
-                  } else {
-                    setModalVisible(true);
+        ) : filteredAccounts.length > 0 ? (
+          activeSegment === 'EMPLOYEE' ? (
+            filteredAccounts.map((emp) => renderEmployeeCard(emp))
+          ) : (
+            filteredAccounts.map((client) => {
+              const wallet: UserWalletSummary = {
+                userId: client.id,
+                totalDepositPaise: client.totalDepositPrincipalPaise || 0,
+                totalBonusPaise: 0,
+                totalCreditPaise: 0,
+                totalWithdrawalPaise: 0,
+                availableBalancePaise: client.totalBalancePaise || 0,
+                pendingDepositCount: 0,
+                pendingWithdrawalCount: 0,
+              };
+              return (
+                <UserCard
+                  key={client.id}
+                  user={client}
+                  walletSummary={wallet}
+                  onPress={() =>
+                    navigation.navigate('UserDetails', { userId: client.id })
                   }
-                }}
-              />
-            )}
-          </View>
+                />
+              );
+            })
+          )
+        ) : (
+          <EmptyState
+            icon={activeSegment === 'EMPLOYEE' ? 'shield-account-outline' : 'account-group-outline'}
+            title={`No ${activeSegment === 'EMPLOYEE' ? 'Employees' : 'Clients'} Found`}
+            description={
+              activeSegment === 'EMPLOYEE'
+                ? 'Tap "Create New Employee" above to set up staff credentials and assign permissions.'
+                : 'Tap "Create New Client" above to add a client account.'
+            }
+          />
         )}
       </View>
 
-      {/* CREATE USER MODAL */}
+      {/* Create Client / Employee Modal */}
       <Modal
         visible={modalVisible}
-        transparent
         animationType="slide"
+        transparent
         onRequestClose={() => setModalVisible(false)}
       >
         <KeyboardAvoidingView
+          style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
         >
-          <View style={styles.modalCard}>
-            {/* Modal Header */}
+          <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Create New User</Text>
-                <Text style={styles.modalSubtitle}>
-                  Set credentials and custom bonus configuration
-                </Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => setModalVisible(false)}
-                style={styles.closeButton}
-              >
-                <Ionicons name="close" size={20} color={colors.textSecondary} />
+              <Text style={styles.modalTitle}>
+                {createType === 'EMPLOYEE' ? 'Create Employee Account' : 'Create Client Account'}
+              </Text>
+              <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.formContainer}
+              keyboardShouldPersistTaps="handled"
             >
-              {formError ? (
-                <View style={styles.errorAlert}>
+              {/* Account Type Selector (Super Admin only) */}
+              {isSuperAdmin && (
+                <View style={styles.typeSelectorContainer}>
+                  <Text style={styles.fieldLabel}>Select Account Type</Text>
+                  <View style={styles.typeRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.typeCard,
+                        createType === 'CLIENT' && styles.typeCardActive,
+                      ]}
+                      onPress={() => setCreateType('CLIENT')}
+                    >
+                      <Ionicons
+                        name="person-outline"
+                        size={20}
+                        color={createType === 'CLIENT' ? colors.primary : colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          styles.typeCardTitle,
+                          createType === 'CLIENT' && styles.typeCardTitleActive,
+                        ]}
+                      >
+                        Client
+                      </Text>
+                      <Text style={styles.typeCardSub}>No login needed</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.typeCard,
+                        createType === 'EMPLOYEE' && styles.typeCardActiveEmp,
+                      ]}
+                      onPress={() => setCreateType('EMPLOYEE')}
+                    >
+                      <Ionicons
+                        name="shield-checkmark-outline"
+                        size={20}
+                        color={createType === 'EMPLOYEE' ? '#7C3AED' : colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          styles.typeCardTitle,
+                          createType === 'EMPLOYEE' && { color: '#6D28D9' },
+                        ]}
+                      >
+                        Employee
+                      </Text>
+                      <Text style={styles.typeCardSub}>Login + Permissions</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {!!formError && (
+                <View style={styles.errorBox}>
                   <Ionicons name="alert-circle" size={16} color={colors.danger} />
                   <Text style={styles.errorText}>{formError}</Text>
                 </View>
-              ) : null}
+              )}
 
-              {/* Full Name */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Full Name</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="person-outline" size={18} color={colors.textMuted} />
+              {/* Common Identity Fields */}
+              <Text style={styles.fieldLabel}>Full Name *</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder={createType === 'EMPLOYEE' ? 'e.g. Suresh Verma' : 'e.g. Rohit Deshmukh'}
+                placeholderTextColor={colors.textLight}
+                value={name}
+                onChangeText={setName}
+              />
+
+              <Text style={styles.fieldLabel}>Phone Number *</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="10-digit mobile number"
+                placeholderTextColor={colors.textLight}
+                keyboardType="phone-pad"
+                maxLength={10}
+                value={phone}
+                onChangeText={setPhone}
+              />
+
+              {createType === 'CLIENT' ? (
+                <>
+                  <View style={styles.noLoginBadge}>
+                    <Ionicons name="information-circle" size={16} color={colors.primary} />
+                    <Text style={styles.noLoginBadgeText}>
+                      Client info requires only Name & Phone. Daily running bonus automatically applies to deposits.
+                    </Text>
+                  </View>
+
+                  {canSetThreshold && (
+                    <View style={{ marginTop: 6 }}>
+                      <Text style={styles.fieldLabel}>Threshold Start Limit (₹)</Text>
+                      <TextInput
+                        style={styles.textInput}
+                        placeholder="15000"
+                        keyboardType="numeric"
+                        value={bonusThresholdLimit}
+                        onChangeText={setBonusThresholdLimit}
+                      />
+                      <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                        Withdrawals reaching/exceeding this limit will have the bonus excluded.
+                      </Text>
+                    </View>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Text style={styles.fieldLabel}>Email (Optional)</Text>
                   <TextInput
-                    style={styles.input}
-                    placeholder="e.g. Aditya Sharma"
+                    style={styles.textInput}
+                    placeholder="name@example.com"
                     placeholderTextColor={colors.textLight}
-                    value={name}
-                    onChangeText={setName}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={email}
+                    onChangeText={setEmail}
                   />
-                </View>
-              </View>
 
-              {/* Phone Number */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Mobile Phone Number</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="call-outline" size={18} color={colors.textMuted} />
+                  {/* Employee Credentials */}
+                  <Text style={styles.fieldLabel}>Employee Login Password *</Text>
                   <TextInput
-                    style={styles.input}
-                    placeholder="e.g. 9820123456"
-                    placeholderTextColor={colors.textLight}
-                    keyboardType="phone-pad"
-                    value={phone}
-                    onChangeText={setPhone}
-                  />
-                </View>
-              </View>
-
-              {/* Password */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Password</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons
-                    name="lock-closed-outline"
-                    size={18}
-                    color={colors.textMuted}
-                  />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Minimum 4 characters"
+                    style={styles.textInput}
+                    placeholder="Min 4 characters"
                     placeholderTextColor={colors.textLight}
                     secureTextEntry
                     value={password}
                     onChangeText={setPassword}
                   />
-                </View>
-              </View>
 
-              {/* Bonus Percentage */}
-              <View style={styles.inputGroup}>
-                <View style={styles.labelRow}>
-                  <Text style={styles.inputLabel}>Assigned Bonus Rate (%)</Text>
-                  <Text style={styles.labelHint}>Default: 10%</Text>
-                </View>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="sparkles" size={18} color="#D97706" />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="10.0"
-                    placeholderTextColor={colors.textLight}
-                    keyboardType="numeric"
-                    value={bonusPercentage}
-                    onChangeText={setBonusPercentage}
-                  />
-                </View>
-              </View>
+                  {/* Granular Employee Permissions */}
+                  <View style={styles.permsHeaderRow}>
+                    <Text style={styles.permsSectionTitle}>Assign Permissions</Text>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity
+                        onPress={() =>
+                          setEmpPermissions({
+                            canOcrUpload: true,
+                            canDeposit: true,
+                            canWithdraw: true,
+                            canSetBonus: true,
+                            canSetThreshold: true,
+                            canManageClients: true,
+                          })
+                        }
+                      >
+                        <Text style={styles.selectAllText}>Grant All</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() =>
+                          setEmpPermissions({
+                            canOcrUpload: false,
+                            canDeposit: false,
+                            canWithdraw: false,
+                            canSetBonus: false,
+                            canSetThreshold: false,
+                            canManageClients: false,
+                          })
+                        }
+                      >
+                        <Text style={[styles.selectAllText, { color: colors.textMuted }]}>
+                          Clear
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
 
-              {/* Bonus Threshold Limit in Rupees */}
-              <View style={styles.inputGroup}>
-                <View style={styles.labelRow}>
-                  <Text style={styles.inputLabel}>Bonus Threshold Limit (₹)</Text>
-                  <Text style={styles.labelHint}>Default: ₹10,000</Text>
-                </View>
-                <View style={styles.inputWrapper}>
-                  <Text style={styles.currencyPrefix}>₹</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="10000"
-                    placeholderTextColor={colors.textLight}
-                    keyboardType="numeric"
-                    value={bonusThresholdLimit}
-                    onChangeText={setBonusThresholdLimit}
-                  />
-                </View>
-              </View>
+                  <View style={styles.permsList}>
+                    {PERMISSION_DEFINITIONS.map((perm) => (
+                      <View key={perm.key} style={styles.permSwitchRow}>
+                        <View style={styles.permIconCircle}>
+                          <Ionicons name={perm.icon} size={16} color="#6D28D9" />
+                        </View>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={styles.permTitle}>{perm.title}</Text>
+                          <Text style={styles.permDesc}>{perm.desc}</Text>
+                        </View>
+                        <Switch
+                          value={empPermissions[perm.key]}
+                          onValueChange={() => togglePermission(perm.key)}
+                          trackColor={{ false: '#E2E8F0', true: '#C4B5FD' }}
+                          thumbColor={empPermissions[perm.key] ? '#7C3AED' : '#94A3B8'}
+                        />
+                      </View>
+                    ))}
+                  </View>
+                </>
+              )}
 
-              {/* Action Buttons */}
               <View style={styles.modalActions}>
                 <SecondaryButton
                   title="Cancel"
                   onPress={() => setModalVisible(false)}
-                  style={styles.cancelBtn}
+                  style={{ flex: 1 }}
+                  disabled={isSubmitting}
                 />
                 <PrimaryButton
-                  title="Create User"
-                  onPress={handleCreateUser}
+                  title={
+                    isSubmitting
+                      ? 'Creating...'
+                      : createType === 'EMPLOYEE'
+                      ? 'Create Employee'
+                      : 'Create Client'
+                  }
+                  onPress={handleCreateAccount}
                   loading={isSubmitting}
-                  style={styles.submitBtn}
+                  style={{ flex: 1 }}
                 />
               </View>
             </ScrollView>
@@ -478,35 +794,68 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 24,
   },
+  segmentContainer: {
+    flexDirection: 'row',
+    backgroundColor: colors.white,
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    gap: 6,
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  segmentBtnActive: {
+    backgroundColor: colors.primary,
+  },
+  segmentBtnActiveEmp: {
+    backgroundColor: '#7C3AED',
+  },
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textSecondary,
+  },
+  segmentTextActive: {
+    color: colors.white,
+  },
   addUserButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EFF6FF',
+    backgroundColor: colors.white,
     borderRadius: 16,
     padding: 14,
-    borderWidth: 1.5,
-    borderColor: '#BFDBFE',
     marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: colors.primary + '35',
   },
   addUserIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 12,
   },
   addUserTextCol: {
     flex: 1,
-    marginLeft: 12,
   },
   addUserTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.text,
   },
   addUserSubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     color: colors.textSecondary,
     marginTop: 2,
   },
@@ -516,26 +865,26 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderRadius: 14,
     paddingHorizontal: 14,
-    height: 48,
+    paddingVertical: 10,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: colors.cardBorder,
-    marginBottom: 12,
+    gap: 8,
   },
   searchInput: {
     flex: 1,
-    marginLeft: 8,
     fontSize: 14,
     color: colors.text,
   },
   filterRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 12,
+    marginBottom: 14,
   },
   filterChip: {
     paddingVertical: 6,
     paddingHorizontal: 12,
-    borderRadius: 16,
+    borderRadius: 18,
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.cardBorder,
@@ -552,119 +901,267 @@ const styles = StyleSheet.create({
   filterChipTextSelected: {
     color: colors.white,
   },
-  loadingContainer: {
-    paddingVertical: 40,
+  loadingBox: {
+    paddingVertical: 48,
     alignItems: 'center',
   },
   loadingText: {
-    marginTop: 12,
+    marginTop: 10,
     fontSize: 13,
+    color: colors.textMuted,
+  },
+  employeeCard: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  empTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  empAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  empNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  empName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  empPhone: {
+    fontSize: 12,
     color: colors.textSecondary,
+    marginTop: 2,
   },
-  listContainer: {
-    marginTop: 4,
+  empStatusBadge: {
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
   },
-  modalBackdrop: {
+  empStatusBlocked: {
+    backgroundColor: colors.dangerLight,
+  },
+  empStatusText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#15803D',
+  },
+  empStatusBlockedText: {
+    color: colors.danger,
+  },
+  permChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  permChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F3FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  permChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#6D28D9',
+  },
+  noPermChipText: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+  },
+  modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
     justifyContent: 'flex-end',
   },
-  modalCard: {
+  modalSheet: {
     backgroundColor: colors.white,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    maxHeight: '92%',
     padding: 20,
-    maxHeight: '85%',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.cardBorder,
+    alignItems: 'center',
+    marginBottom: 14,
   },
   modalTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '800',
     color: colors.text,
   },
-  modalSubtitle: {
-    fontSize: 12,
+  typeSelectorContainer: {
+    marginBottom: 12,
+  },
+  typeRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  typeCard: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surfaceAlt,
+  },
+  typeCardActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.lightBlue,
+  },
+  typeCardActiveEmp: {
+    borderColor: '#7C3AED',
+    backgroundColor: '#F5F3FF',
+  },
+  typeCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    marginTop: 4,
+  },
+  typeCardTitleActive: {
+    color: colors.primaryDark,
+  },
+  typeCardSub: {
+    fontSize: 11,
     color: colors.textMuted,
     marginTop: 2,
   },
-  closeButton: {
-    padding: 4,
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginBottom: 6,
+    marginTop: 8,
   },
-  formContainer: {
-    paddingVertical: 14,
+  textInput: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 14,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
   },
-  errorAlert: {
+  noLoginBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEE2E2',
+    backgroundColor: colors.lightBlue,
     padding: 10,
     borderRadius: 10,
-    marginBottom: 12,
+    marginTop: 10,
     gap: 8,
   },
-  errorText: {
-    color: colors.danger,
+  noLoginBadgeText: {
     fontSize: 12,
+    color: colors.primaryDark,
+    fontWeight: '600',
     flex: 1,
-    fontWeight: '500',
   },
-  inputGroup: {
-    marginBottom: 12,
+  twoColRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
   },
-  labelRow: {
+  permsHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 16,
+    marginBottom: 8,
   },
-  inputLabel: {
+  permsSectionTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  selectAllText: {
     fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    marginBottom: 6,
+    fontWeight: '700',
+    color: '#7C3AED',
   },
-  labelHint: {
-    fontSize: 11,
-    color: colors.textMuted,
+  permsList: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 14,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
   },
-  inputWrapper: {
+  permSwitchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 48,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
   },
-  currencyPrefix: {
-    fontSize: 16,
+  permIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  permTitle: {
+    fontSize: 13,
     fontWeight: '700',
     color: colors.text,
-    marginRight: 6,
   },
-  input: {
+  permDesc: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 1,
+  },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.dangerLight,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 8,
+    gap: 8,
+  },
+  errorText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.danger,
     flex: 1,
-    marginLeft: 8,
-    fontSize: 14,
-    color: colors.text,
   },
   modalActions: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 14,
-  },
-  cancelBtn: {
-    flex: 1,
-  },
-  submitBtn: {
-    flex: 1.5,
+    marginTop: 18,
+    marginBottom: 14,
   },
 });
 

@@ -41,7 +41,7 @@ export const DepositScreen = () => {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 1,
+        quality: 0.65,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {

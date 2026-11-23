@@ -1,5 +1,16 @@
 export type UserRole = 'user' | 'admin';
 
+export type AccountType = 'CLIENT' | 'EMPLOYEE' | 'SUPER_ADMIN';
+
+export interface EmployeePermissions {
+  canOcrUpload: boolean;
+  canDeposit: boolean;
+  canWithdraw: boolean;
+  canSetBonus: boolean;
+  canSetThreshold: boolean;
+  canManageClients: boolean;
+}
+
 export type UserStatus = 'active' | 'blocked';
 
 export interface BankAccount {
@@ -15,6 +26,9 @@ export interface User {
   email: string;
   phone: string;
   role: 'user';
+  accountType?: AccountType;
+  isSuperAdmin?: boolean;
+  permissions?: EmployeePermissions;
   status: UserStatus;
   createdAt: string;
   upiId?: string;
@@ -24,6 +38,9 @@ export interface User {
   bonusPercentage?: number;
   bonusThresholdLimitPaise?: number;
   totalBalancePaise?: number;
+  totalDepositPrincipalPaise?: number;
+  withdrawablePaise?: number;
+  isThresholdReached?: boolean;
 }
 
 export interface AdminUser {
@@ -32,7 +49,10 @@ export interface AdminUser {
   email: string;
   phone: string;
   role: 'admin';
-  adminRoleTitle: string; // e.g., 'Super Admin', 'Finance Manager'
+  accountType?: AccountType;
+  isSuperAdmin?: boolean;
+  permissions?: EmployeePermissions;
+  adminRoleTitle: string; // e.g., 'Super Administrator', 'Employee'
   avatarUrl?: string;
 }
 
@@ -123,13 +143,16 @@ export interface BonusConfig {
 }
 
 export interface AdminStats {
+  totalClients?: number;
+  totalEmployees?: number;
   totalUsers: number;
+  totalTransactionsCount?: number;
   totalApprovedDepositsPaise: number;
   totalApprovedWithdrawalsPaise: number;
   totalBonusGivenPaise: number;
-  totalWalletLiabilityPaise: number;
-  pendingDepositRequestsCount: number;
-  pendingWithdrawalRequestsCount: number;
+  totalWalletLiabilityPaise?: number;
+  pendingDepositRequestsCount?: number;
+  pendingWithdrawalRequestsCount?: number;
 }
 
 export interface AppNotification {

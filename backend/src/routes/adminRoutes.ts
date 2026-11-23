@@ -3,73 +3,95 @@ import {
   createUser,
   getAllUsers,
   getUserById,
+  updateUser,
+  updateEmployeePermissions,
   updateUserBonusConfig,
   toggleBlockUser,
 } from '../controllers/adminController';
 import {
   getAllTransactions,
-  getPendingDeposits,
-  getPendingWithdrawals,
-  approveDeposit,
-  rejectDeposit,
-  approveWithdrawal,
-  rejectWithdrawal,
+  createClientDeposit,
+  createClientWithdrawal,
   getAdminStats,
+  getDailyBonusConfig,
+  updateDailyBonusConfig,
 } from '../controllers/adminTransactionController';
-import { authenticateToken, requireAdmin } from '../middleware/auth';
+import { scanReceiptOcr } from '../controllers/ocrController';
+import {
+  authenticateToken,
+  requireStaff,
+  requireSuperAdmin,
+  requireAnyPermission,
+} from '../middleware/auth';
 
 const router = Router();
 
-// Apply auth & admin check to all admin routes
+// All routes require valid JWT and Staff role (Super Admin or Employee)
 router.use(authenticateToken);
-router.use(requireAdmin);
+router.use(requireStaff);
 
-// Platform KPI Metrics
+// Clean Operational KPI Metrics (No Liability Wallet, No Pending Approval Queues)
 // GET /api/admin/stats
 router.get('/stats', getAdminStats);
 
-// User Management Routes
-// POST /api/admin/users/create
+// Client & Employee Account Management Routes
+// POST /api/admin/users/create (Super Admin creates Client or Employee; Employee with canManageClients creates Client)
 router.post('/users/create', createUser);
 
-// GET /api/admin/users
+// GET /api/admin/users (Clients for all staff; Employees for Super Admin only)
 router.get('/users', getAllUsers);
 
 // GET /api/admin/users/:userId
 router.get('/users/:userId', getUserById);
 
-// PATCH /api/admin/users/:userId/bonus-config
-router.patch('/users/:userId/bonus-config', updateUserBonusConfig);
+// PATCH /api/admin/users/:userId (Edit client/employee details)
+router.patch('/users/:userId', updateUser);
+
+// PATCH /api/admin/users/:userId/permissions (Super Admin ONLY)
+router.patch('/users/:userId/permissions', requireSuperAdmin, updateEmployeePermissions);
+
+// PATCH /api/admin/users/:userId/bonus-config (Granular canSetBonus / canSetThreshold checks inside controller)
+router.patch(
+  '/users/:userId/bonus-config',
+  requireAnyPermission('canSetBonus', 'canSetThreshold'),
+  updateUserBonusConfig
+);
 
 // PATCH /api/admin/users/:userId/toggle-block
 router.patch('/users/:userId/toggle-block', toggleBlockUser);
 
-// Transaction Verification & Approval Routes
-// GET /api/admin/pending-deposits
-router.get('/pending-deposits', getPendingDeposits);
+// Server-side Reliable OCR Scanner
+// POST /api/admin/ocr/scan
+router.post(
+  '/ocr/scan',
+  requireAnyPermission('canOcrUpload', 'canDeposit'),
+  scanReceiptOcr
+);
 
-// GET /api/admin/pending-withdrawals
-router.get('/pending-withdrawals', getPendingWithdrawals);
+// Auto-Accept Client Transactions (Instant Approval — No Pending Queue)
+// POST /api/admin/clients/:clientId/deposit (OCR Upload or Manual Deposit)
+router.post(
+  '/clients/:clientId/deposit',
+  requireAnyPermission('canOcrUpload', 'canDeposit'),
+  createClientDeposit
+);
 
+// POST /api/admin/clients/:clientId/withdraw (Rule-Based Auto-Accept Withdrawal)
+router.post(
+  '/clients/:clientId/withdraw',
+  requireAnyPermission('canWithdraw'),
+  createClientWithdrawal
+);
+
+// Daily Running Bonus Rate Routes
+// GET /api/admin/daily-bonus (Accessible to all staff to see today's active rate)
+router.get('/daily-bonus', getDailyBonusConfig);
+
+// POST /api/admin/daily-bonus (Super Admin ONLY to set daily rate)
+router.post('/daily-bonus', requireSuperAdmin, updateDailyBonusConfig);
+
+// Master Transaction Ledger
 // GET /api/admin/transactions
 router.get('/transactions', getAllTransactions);
-
-// Approve endpoints (support both POST and PATCH, and /approve / /approve-deposit)
-router.post('/transactions/:id/approve', approveDeposit);
-router.patch('/transactions/:id/approve', approveDeposit);
-router.post('/transactions/:id/approve-deposit', approveDeposit);
-router.patch('/transactions/:id/approve-deposit', approveDeposit);
-
-// Reject endpoints (support both POST and PATCH, and /reject / /reject-deposit)
-router.post('/transactions/:id/reject', rejectDeposit);
-router.patch('/transactions/:id/reject', rejectDeposit);
-router.post('/transactions/:id/reject-deposit', rejectDeposit);
-router.patch('/transactions/:id/reject-deposit', rejectDeposit);
-
-// Payout / Withdrawal Approval Routes
-router.post('/transactions/:id/approve-withdrawal', approveWithdrawal);
-router.patch('/transactions/:id/approve-withdrawal', approveWithdrawal);
-router.post('/transactions/:id/reject-withdrawal', rejectWithdrawal);
-router.patch('/transactions/:id/reject-withdrawal', rejectWithdrawal);
 
 export default router;

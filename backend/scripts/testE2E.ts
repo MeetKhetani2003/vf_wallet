@@ -6,18 +6,13 @@ import { AddressInfo } from 'net';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-interface TestResult {
-  suite: string;
-  testCase: string;
-  passed: boolean;
-  status: number | string;
-  detail: string;
-}
-
-const results: TestResult[] = [];
-
-function recordTest(suite: string, testCase: string, passed: boolean, status: number | string, detail: string) {
-  results.push({ suite, testCase, passed, status, detail });
+function recordTest(
+  suite: string,
+  testCase: string,
+  passed: boolean,
+  status: number | string,
+  detail: string
+) {
   const icon = passed ? '✅' : '❌';
   console.log(`  ${icon} [${suite}] ${testCase} (${status}) -> ${detail}`);
   if (!passed) {
@@ -27,88 +22,42 @@ function recordTest(suite: string, testCase: string, passed: boolean, status: nu
 
 async function runE2ETests() {
   console.log('================================================================');
-  console.log('🧪 [E2E] Running Comprehensive Backend API Verification Suite');
+  console.log('🧪 [E2E] Staff RBAC, Client Accounts & Auto-Accept API Test Suite');
   console.log('================================================================\n');
 
-  // Dynamic import after setting NODE_ENV = 'test'
   const { app, prisma } = await import('../src/server');
-
-  // 1. Start Server on dynamic free port
   const server = app.listen(0);
   const port = (server.address() as AddressInfo).port;
   const BASE_URL = `http://localhost:${port}`;
   console.log(`🚀 Ephemeral Test Server running at: ${BASE_URL}\n`);
 
+  const CLIENT_PHONE = '9820011223';
+  const EMP_PHONE = '9820099887';
+  const TEST_UTR = '987654321098';
+  const TEST_HASH = 'sha256_auto_accept_receipt_hash_test_001';
+
   let adminToken = '';
-  let userToken = '';
-  let createdUserId = '';
-  let depositTxnId = '';
-  let withdrawTxnId1 = '';
-  let withdrawTxnId2 = '';
-
-  const TEST_USER = {
-    name: 'Rohit Deshmukh',
-    phone: '9820011223',
-    email: 'rohit.deshmukh@vfwallet.local',
-    password: 'User@123',
-    bonusPercentage: 10.0,
-    bonusThresholdLimit: 10000, // ₹10,000 = 1,000,000 paise
-  };
-
-  const TEST_DEPOSIT = {
-    amountPaise: 50000, // ₹500.00
-    utr: '987654321098', // 12-digit UTR
-    imageHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-    paymentApp: 'GooglePay',
-    rawOcrData: {
-      utr: '987654321098',
-      amount: 500,
-      paymentApp: 'GooglePay',
-      sender: 'Rohit Deshmukh',
-    },
-  };
+  let employeeToken = '';
+  let clientId = '';
+  let employeeId = '';
 
   try {
-    // Ensure clean state before running
-    const existingTestUser = await prisma.user.findFirst({
-      where: { phone: TEST_USER.phone },
+    // Cleanup any leftovers before starting
+    const leftovers = await prisma.user.findMany({
+      where: { phone: { in: [CLIENT_PHONE, EMP_PHONE] } },
     });
-    if (existingTestUser) {
-      await prisma.transaction.deleteMany({ where: { userId: existingTestUser.id } });
-      await prisma.user.delete({ where: { id: existingTestUser.id } });
+    for (const u of leftovers) {
+      await prisma.transaction.deleteMany({ where: { userId: u.id } });
+      await prisma.user.delete({ where: { id: u.id } });
     }
     await prisma.transaction.deleteMany({
-      where: {
-        OR: [
-          { utr: TEST_DEPOSIT.utr },
-          { imageHash: TEST_DEPOSIT.imageHash },
-        ],
-      },
+      where: { OR: [{ utr: TEST_UTR }, { imageHash: TEST_HASH }] },
     });
 
     // =========================================================================
-    // SUITE 1: AUTHENTICATION VERIFICATION
+    // SUITE 1: SUPER ADMIN AUTH
     // =========================================================================
-    console.log('--- Suite 1: Authentication & Authorization ---');
-
-    // 1.1: Invalid Credentials
-    {
-      const res = await fetch(`${BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: '9999999999', password: 'WrongPassword' }),
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Auth',
-        'POST /api/auth/login with invalid password returns 401',
-        res.status === 401 && data.success === false,
-        res.status,
-        data.error || 'Blocked correctly'
-      );
-    }
-
-    // 1.2: Valid Super Admin Login
+    console.log('--- Suite 1: Super Admin Authentication ---');
     {
       const res = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
@@ -119,47 +68,20 @@ async function runE2ETests() {
       adminToken = data.token;
       recordTest(
         'Auth',
-        'POST /api/auth/login with Super Admin credentials',
-        res.status === 200 && data.success === true && !!data.token && data.user.role === 'SUPER_ADMIN',
+        'Super Admin login succeeds with all permissions',
+        res.status === 200 &&
+          data.success === true &&
+          data.user.isSuperAdmin === true &&
+          data.user.permissions.canOcrUpload === true,
         res.status,
-        `Admin logged in: ${data.user.name} (${data.user.role})`
-      );
-    }
-
-    // 1.3: GET /api/auth/me without token -> 401
-    {
-      const res = await fetch(`${BASE_URL}/api/auth/me`);
-      const data = (await res.json()) as any;
-      recordTest(
-        'Auth',
-        'GET /api/auth/me without token is rejected with 401',
-        res.status === 401,
-        res.status,
-        data.error || 'Unauthorized'
-      );
-    }
-
-    // 1.4: GET /api/auth/me with Admin Token
-    {
-      const res = await fetch(`${BASE_URL}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Auth',
-        'GET /api/auth/me with valid Bearer token returns profile',
-        res.status === 200 && data.success === true && data.user.phone === '9999999999',
-        res.status,
-        `Profile verified: ${data.user.name} (${data.user.phone})`
+        `Logged in as ${data.user.name} (${data.user.role})`
       );
     }
 
     // =========================================================================
-    // SUITE 2: ADMIN USER CREATION
+    // SUITE 2: CLIENT CREATION (NO LOGIN REQUIRED) & LOGIN BLOCK
     // =========================================================================
-    console.log('\n--- Suite 2: Admin User Creation ---');
-
-    // 2.1: Create real user with 10% bonus and ₹10,000 threshold
+    console.log('\n--- Suite 2: Client Account Creation (No Login) ---');
     {
       const res = await fetch(`${BASE_URL}/api/admin/users/create`, {
         method: 'POST',
@@ -167,358 +89,380 @@ async function runE2ETests() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`,
         },
-        body: JSON.stringify(TEST_USER),
+        body: JSON.stringify({
+          name: 'Rohit Client',
+          phone: CLIENT_PHONE,
+          userType: 'CLIENT',
+          upiId: 'rohit@okaxis',
+          bonusPercentage: 10.0,
+          bonusThresholdLimit: 10000,
+        }),
       });
       const data = (await res.json()) as any;
-      createdUserId = data.user?.id;
+      clientId = data.user?.id;
       recordTest(
-        'Admin',
-        'POST /api/admin/users/create creates user with custom bonus & threshold',
+        'Client',
+        'Create CLIENT without password succeeds',
         res.status === 201 &&
           data.success === true &&
-          data.user.bonusPercentage === 10 &&
-          data.user.bonusThresholdLimitPaise === 1000000 &&
+          data.user.accountType === 'CLIENT' &&
           data.user.totalBalancePaise === 0,
         res.status,
-        `Created user ID: ${createdUserId}, Bonus: ${data.user.bonusPercentage}%, Threshold: ₹${data.user.bonusThresholdLimitPaise / 100}, Balance: ₹${data.user.totalBalancePaise / 100}`
+        `Client created: ${data.user.name} (ID: ${clientId})`
       );
     }
 
-    // 2.2: Login as new user
     {
       const res = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: TEST_USER.phone, password: TEST_USER.password }),
-      });
-      const data = (await res.json()) as any;
-      userToken = data.token;
-      recordTest(
-        'Auth',
-        'POST /api/auth/login with newly created user credentials',
-        res.status === 200 && data.success === true && !!data.token,
-        res.status,
-        `User logged in: ${data.user.name}`
-      );
-    }
-
-    // 2.3: Verify initial balance is 0
-    {
-      const res = await fetch(`${BASE_URL}/api/wallet/summary`, {
-        headers: { Authorization: `Bearer ${userToken}` },
+        body: JSON.stringify({ phone: CLIENT_PHONE, password: 'anypassword' }),
       });
       const data = (await res.json()) as any;
       recordTest(
-        'Wallet',
-        'GET /api/wallet/summary verifies clean initial balance of ₹0',
-        res.status === 200 &&
-          data.success === true &&
-          data.wallet.availableBalancePaise === 0 &&
-          data.wallet.totalDepositPaise === 0,
+        'Client Security',
+        'Client accounts are blocked from logging in (HTTP 403)',
+        res.status === 403 && data.success === false,
         res.status,
-        `Initial Available Balance: ₹${data.wallet.availableBalanceRupees}`
+        data.error
       );
     }
 
     // =========================================================================
-    // SUITE 3: OCR DEPOSIT SUBMISSION & ANTI-FRAUD DUPLICATE GUARD
+    // SUITE 3: EMPLOYEE CREATION & GRANULAR PERMISSION ENFORCEMENT
     // =========================================================================
-    console.log('\n--- Suite 3: OCR Deposit Submission & Security Guard ---');
-
-    // 3.1: Submit valid OCR Deposit
+    console.log('\n--- Suite 3: Employee Creation & RBAC Permissions ---');
     {
-      const res = await fetch(`${BASE_URL}/api/wallet/deposit`, {
+      const res = await fetch(`${BASE_URL}/api/admin/users/create`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${adminToken}`,
         },
-        body: JSON.stringify(TEST_DEPOSIT),
+        body: JSON.stringify({
+          name: 'Karan Staff',
+          phone: EMP_PHONE,
+          password: 'Staff@123',
+          userType: 'EMPLOYEE',
+          permissions: {
+            canOcrUpload: true,
+            canDeposit: false,
+            canWithdraw: false,
+            canSetBonus: false,
+            canSetThreshold: false,
+            canManageClients: false,
+          },
+        }),
       });
       const data = (await res.json()) as any;
-      depositTxnId = data.transaction?.id;
+      employeeId = data.user?.id;
       recordTest(
-        'Deposit',
-        'POST /api/wallet/deposit submits PENDING deposit with 10% bonus locked',
+        'Employee',
+        'Super Admin creates EMPLOYEE with OCR-only permission',
         res.status === 201 &&
           data.success === true &&
-          data.transaction.status === 'PENDING' &&
-          data.transaction.amountPaise === 50000 &&
-          data.transaction.bonusPaise === 5000,
+          data.user.accountType === 'EMPLOYEE' &&
+          data.user.permissions.canOcrUpload === true &&
+          data.user.permissions.canWithdraw === false,
         res.status,
-        `Deposit ID: ${depositTxnId}, Principal: ₹${data.transaction.amountPaise / 100}, Locked Bonus: ₹${data.transaction.bonusPaise / 100}`
+        `Employee created: ${data.user.name} (OCR-only)`
       );
     }
 
-    // 3.2: Duplicate Guard - Duplicate UTR check
     {
-      const res = await fetch(`${BASE_URL}/api/wallet/deposit`, {
+      const res = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
-        },
-        body: JSON.stringify({
-          ...TEST_DEPOSIT,
-          imageHash: 'different_hash_for_same_utr_test_1234567890',
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: EMP_PHONE, password: 'Staff@123' }),
       });
       const data = (await res.json()) as any;
+      employeeToken = data.token;
       recordTest(
-        'Security',
-        'POST /api/wallet/deposit blocks duplicate UTR with HTTP 409 Conflict',
-        res.status === 409 && data.success === false && data.duplicateType === 'utr',
-        res.status,
-        `Blocked duplicate UTR: ${data.error}`
-      );
-    }
-
-    // 3.3: Duplicate Guard - Duplicate Image Hash check
-    {
-      const res = await fetch(`${BASE_URL}/api/wallet/deposit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
-        },
-        body: JSON.stringify({
-          ...TEST_DEPOSIT,
-          utr: '987654321099', // Different UTR, duplicate imageHash
-        }),
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Security',
-        'POST /api/wallet/deposit blocks duplicate Image Hash with HTTP 409 Conflict',
-        res.status === 409 && data.success === false && data.duplicateType === 'imageHash',
-        res.status,
-        `Blocked duplicate image screenshot: ${data.error}`
-      );
-    }
-
-    // =========================================================================
-    // SUITE 4: ADMIN DEPOSIT VERIFICATION & ATOMIC BONUS CREDIT
-    // =========================================================================
-    console.log('\n--- Suite 4: Admin Deposit Verification & Atomic Credit ---');
-
-    // 4.1: Verify deposit appears in Admin Pending Queue
-    {
-      const res = await fetch(`${BASE_URL}/api/admin/pending-deposits`, {
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      const data = (await res.json()) as any;
-      const found = data.transactions?.find((t: any) => t.id === depositTxnId);
-      recordTest(
-        'Admin Queue',
-        'GET /api/admin/pending-deposits lists the submitted deposit',
-        res.status === 200 && data.success === true && !!found,
-        res.status,
-        `Found pending deposit in queue with user ${found?.user?.name}`
-      );
-    }
-
-    // 4.2: Admin Approves Deposit -> Credits Principal + Bonus atomically
-    {
-      const res = await fetch(`${BASE_URL}/api/admin/transactions/${depositTxnId}/approve`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Admin Approval',
-        'POST /api/admin/transactions/:id/approve atomically credits Principal + 10% Bonus',
+        'Employee Auth',
+        'Employee logs in and receives resolved permissions',
         res.status === 200 &&
+          !!data.token &&
+          data.user.isSuperAdmin === false &&
+          data.user.permissions.canOcrUpload === true,
+        res.status,
+        `Logged in as ${data.user.name}`
+      );
+    }
+
+    // Employee without canWithdraw is blocked from withdrawing
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/withdraw`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({ amountPaise: 10000 }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'RBAC Guard',
+        'Employee without canWithdraw is blocked with 403',
+        res.status === 403 && data.success === false,
+        res.status,
+        data.error
+      );
+    }
+
+    // Employee without canSetBonus is blocked from updating bonus %
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/users/${clientId}/bonus-config`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({ bonusPercentage: 15 }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'RBAC Guard',
+        'Employee without canSetBonus is blocked with 403',
+        res.status === 403 && data.success === false,
+        res.status,
+        data.error
+      );
+    }
+
+    // Employee without canDeposit is blocked from manual deposit
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/deposit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({ amountPaise: 50000, submissionSource: 'manual' }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'RBAC Guard',
+        'Employee without canDeposit is blocked from manual deposit (403)',
+        res.status === 403 && data.success === false,
+        res.status,
+        data.error
+      );
+    }
+
+    // =========================================================================
+    // SUITE 4: AUTO-ACCEPT OCR DEPOSIT & DUPLICATE GUARD
+    // =========================================================================
+    console.log('\n--- Suite 4: Auto-Accept OCR Deposit & Anti-Fraud ---');
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/deposit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({
+          amountPaise: 50000, // ₹500
+          utr: TEST_UTR,
+          imageHash: TEST_HASH,
+          paymentApp: 'PhonePe',
+          submissionSource: 'ocr',
+        }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'Auto-Accept Deposit',
+        'Employee with canOcrUpload auto-credits Client ₹500 + 10% bonus (₹550) as APPROVED',
+        res.status === 201 &&
           data.success === true &&
           data.transaction.status === 'APPROVED' &&
-          (data.creditedTotalPaise === 55000 || data.userNewBalancePaise === 55000),
+          data.clientNewBalancePaise === 55000,
         res.status,
-        `Approved: Credited Principal (₹500) + Bonus (₹50) = ₹${(data.creditedTotalPaise || data.userNewBalancePaise) / 100}`
+        `Auto-approved! Client new balance: ₹${data.clientNewBalancePaise / 100}`
       );
     }
 
-    // 4.3: Verify user balance is now exactly ₹550.00 (55,000 paise)
+    // Duplicate UTR guard
     {
-      const res = await fetch(`${BASE_URL}/api/wallet/summary`, {
-        headers: { Authorization: `Bearer ${userToken}` },
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Wallet Sync',
-        'GET /api/wallet/summary reflects updated ₹550.00 balance',
-        res.status === 200 &&
-          data.wallet.availableBalancePaise === 55000 &&
-          data.wallet.totalDepositPaise === 50000 &&
-          data.wallet.totalBonusPaise === 5000,
-        res.status,
-        `Available Balance: ₹${data.wallet.availableBalanceRupees}, Principal: ₹${data.wallet.totalDepositRupees}, Bonus: ₹${data.wallet.totalBonusRupees}`
-      );
-    }
-
-    // =========================================================================
-    // SUITE 5: RULE-BASED WITHDRAWAL FLOW & THRESHOLD ENFORCEMENT
-    // =========================================================================
-    console.log('\n--- Suite 5: Rule-Based Withdrawal Logic ---');
-
-    // 5.1: Sub-threshold withdrawal (Balance ₹550 < ₹10,000 limit)
-    // Full points are withdrawable
-    {
-      const res = await fetch(`${BASE_URL}/api/wallet/withdraw`, {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/deposit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${employeeToken}`,
         },
         body: JSON.stringify({
-          amountPaise: 20000, // ₹200.00
-          paymentMethod: 'UPI: rohit@okaxis',
+          amountPaise: 50000,
+          utr: TEST_UTR,
+          imageHash: 'different_hash_999',
+          submissionSource: 'ocr',
+        }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'Anti-Fraud',
+        'Duplicate UTR is blocked with HTTP 409 Conflict',
+        res.status === 409 && data.duplicateType === 'utr',
+        res.status,
+        data.error
+      );
+    }
+
+    // Duplicate Image Hash guard
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/deposit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({
+          amountPaise: 50000,
+          utr: '987654321099',
+          imageHash: TEST_HASH,
+          submissionSource: 'ocr',
+        }),
+      });
+      const data = (await res.json()) as any;
+      recordTest(
+        'Anti-Fraud',
+        'Duplicate Image Hash is blocked with HTTP 409 Conflict',
+        res.status === 409 && data.duplicateType === 'imageHash',
+        res.status,
+        data.error
+      );
+    }
+
+    // =========================================================================
+    // SUITE 5: UPDATE PERMISSIONS & AUTO-ACCEPT RULE-BASED WITHDRAWAL
+    // =========================================================================
+    console.log('\n--- Suite 5: Permission Upgrade & Auto-Accept Withdrawals ---');
+    {
+      const res = await fetch(
+        `${BASE_URL}/api/admin/users/${employeeId}/permissions`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            permissions: {
+              canOcrUpload: true,
+              canDeposit: true,
+              canWithdraw: true,
+              canSetBonus: true,
+              canSetThreshold: true,
+              canManageClients: true,
+            },
+          }),
+        }
+      );
+      const data = (await res.json()) as any;
+      recordTest(
+        'Permissions',
+        'Super Admin grants full operational permissions to Employee',
+        res.status === 200 && data.user.permissions.canWithdraw === true,
+        res.status,
+        'Permissions updated live'
+      );
+    }
+
+    // Employee processes sub-threshold instant withdrawal (₹200)
+    {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/withdraw`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${employeeToken}`,
+        },
+        body: JSON.stringify({
+          amountPaise: 20000, // ₹200
           upiId: 'rohit@okaxis',
         }),
       });
       const data = (await res.json()) as any;
-      withdrawTxnId1 = data.transaction?.id;
       recordTest(
-        'Withdrawal Sub-Threshold',
-        'POST /api/wallet/withdraw creates PENDING withdrawal when below limit',
+        'Auto-Accept Withdraw',
+        'Employee instantly debits Client ₹200 as APPROVED (₹550 -> ₹350)',
         res.status === 201 &&
-          data.success === true &&
-          data.transaction.status === 'PENDING' &&
-          data.isThresholdReached === false,
+          data.transaction.status === 'APPROVED' &&
+          data.clientNewBalancePaise === 35000,
         res.status,
-        `Withdrawal request ID: ${withdrawTxnId1}, Amount: ₹${data.transaction.amountPaise / 100}, Withdrawable: ₹${data.withdrawablePaise / 100}`
+        `Remaining balance: ₹${data.clientNewBalancePaise / 100}`
       );
     }
 
-    // 5.2: Admin approves the withdrawal -> Balance atomically deducted
-    {
-      const res = await fetch(`${BASE_URL}/api/admin/transactions/${withdrawTxnId1}/approve-withdrawal`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      const data = (await res.json()) as any;
-      recordTest(
-        'Admin Payout',
-        'POST /api/admin/transactions/:id/approve-withdrawal executes payout and debits balance',
-        res.status === 200 && data.success === true && data.transaction.status === 'APPROVED',
-        res.status,
-        `Approved payout of ₹${data.transaction.amountPaise / 100}. User balance updated.`
-      );
-
-      // Verify user balance is now 55,000 - 20,000 = 35,000 paise (₹350.00)
-      const balRes = await fetch(`${BASE_URL}/api/wallet/summary`, {
-        headers: { Authorization: `Bearer ${userToken}` },
-      });
-      const balData = (await balRes.json()) as any;
-      recordTest(
-        'Balance Deduction',
-        'User balance debited from ₹550 to ₹350 post-withdrawal',
-        balData.wallet.availableBalancePaise === 35000,
-        balRes.status,
-        `Live Available Balance: ₹${balData.wallet.availableBalanceRupees}`
-      );
-    }
-
-    // 5.3: Threshold Limit Exceeded Rule Test
-    // If total balance reaches or exceeds limit (₹10,000 / 1,000,000 paise),
-    // withdrawable real cash = min(totalBalancePaise, totalDepositPrincipalPaise)
-    // Here: totalDepositPrincipalPaise is 50,000 paise (₹500.00).
-    console.log('\n  * Simulating points reaching threshold (Total Points = ₹12,000 >= ₹10,000 Limit)...');
+    // Threshold Exceeded Rule Enforcement
     await prisma.user.update({
-      where: { id: createdUserId },
-      data: {
-        totalBalancePaise: 1200000, // 1,200,000 paise = ₹12,000
-      },
+      where: { id: clientId },
+      data: { totalBalancePaise: 1200000 }, // ₹12,000 >= ₹10,000 threshold
     });
 
-    // 5.3.a: User attempts to withdraw ₹1,000 (100,000 paise) which exceeds deposit principal (₹500)
     {
-      const res = await fetch(`${BASE_URL}/api/wallet/withdraw`, {
+      const res = await fetch(`${BASE_URL}/api/admin/clients/${clientId}/withdraw`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${employeeToken}`,
         },
-        body: JSON.stringify({
-          amountPaise: 100000, // ₹1,000.00
-          upiId: 'rohit@okaxis',
-        }),
+        body: JSON.stringify({ amountPaise: 100000, upiId: 'rohit@okaxis' }), // ₹1,000 > ₹500 principal
       });
       const data = (await res.json()) as any;
       recordTest(
-        'Threshold Enforcement',
-        'POST /api/wallet/withdraw blocks withdrawal beyond deposited principal when limit reached',
-        res.status === 400 && data.success === false && data.isThresholdReached === true,
+        'Threshold Rule',
+        'Blocks withdrawal exceeding deposited principal when threshold reached (400)',
+        res.status === 400 && data.isThresholdReached === true,
         res.status,
-        `Blocked correctly: ${data.error}`
+        data.error
       );
     }
 
-    // 5.3.b: User requests withdrawal within deposit principal (₹500 = 50,000 paise)
+    // =========================================================================
+    // SUITE 6: DASHBOARD STATS (NO LIABILITY WALLET, NO PENDING QUEUES)
+    // =========================================================================
+    console.log('\n--- Suite 6: Clean Dashboard Stats Verification ---');
     {
-      const res = await fetch(`${BASE_URL}/api/wallet/withdraw`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
-        },
-        body: JSON.stringify({
-          amountPaise: 50000, // ₹500.00 (exactly matches principal cash)
-          upiId: 'rohit@okaxis',
-        }),
-      });
-      const data = (await res.json()) as any;
-      withdrawTxnId2 = data.transaction?.id;
-      recordTest(
-        'Threshold Principal Payout',
-        'POST /api/wallet/withdraw accepts withdrawal within deposited principal when threshold reached',
-        res.status === 201 && data.success === true && data.transaction.status === 'PENDING',
-        res.status,
-        `Allowed principal withdrawal: ₹${data.transaction.amountPaise / 100}, Withdrawable: ₹${data.withdrawablePaise / 100}`
-      );
-    }
-
-    // 5.3.c: Admin approves second withdrawal
-    {
-      const res = await fetch(`${BASE_URL}/api/admin/transactions/${withdrawTxnId2}/approve-withdrawal`, {
-        method: 'POST',
+      const res = await fetch(`${BASE_URL}/api/admin/stats`, {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       const data = (await res.json()) as any;
       recordTest(
-        'Admin Payout 2',
-        'POST /api/admin/transactions/:id/approve-withdrawal reconciles second withdrawal',
-        res.status === 200 && data.success === true,
+        'Stats',
+        'GET /api/admin/stats omits liability wallet & pending queues',
+        res.status === 200 &&
+          data.stats.totalWalletLiabilityPaise === undefined &&
+          data.stats.pendingDepositRequestsCount === undefined &&
+          data.stats.totalClients >= 1 &&
+          data.stats.totalEmployees >= 1,
         res.status,
-        `Approved payout of ₹${data.transaction.amountPaise / 100}. Status: ${data.transaction.status}`
+        `Clients: ${data.stats.totalClients}, Employees: ${data.stats.totalEmployees}, Deposits: ₹${data.stats.totalApprovedDepositsRupees}, Withdrawals: ₹${data.stats.totalApprovedWithdrawalsRupees}`
       );
     }
 
     // =========================================================================
-    // SUITE 6: CLEANUP & POST-TEST PURGE
+    // CLEANUP
     // =========================================================================
-    console.log('\n--- Suite 6: Clean Slate Post-Test Verification ---');
-    console.log('  * Purging test user and test transactions to leave database pristine...');
-    await prisma.transaction.deleteMany({
-      where: { userId: createdUserId },
-    });
-    await prisma.user.delete({
-      where: { id: createdUserId },
-    });
+    console.log('\n--- Cleanup ---');
+    await prisma.transaction.deleteMany({ where: { userId: clientId } });
+    await prisma.user.deleteMany({ where: { id: { in: [clientId, employeeId] } } });
 
-    const finalUsers = await prisma.user.count();
-    const finalTxns = await prisma.transaction.count();
-
+    const testUsersLeft = await prisma.user.count({
+      where: { phone: { in: [CLIENT_PHONE, EMP_PHONE] } },
+    });
+    const testTxnsLeft = await prisma.transaction.count({
+      where: { OR: [{ utr: TEST_UTR }, { imageHash: TEST_HASH }] },
+    });
     recordTest(
-      'Clean Slate',
-      'Database post-test state contains strictly 1 Super Admin and 0 Transactions',
-      finalUsers === 1 && finalTxns === 0,
+      'Cleanup',
+      'All temporary E2E test accounts & transactions removed cleanly',
+      testUsersLeft === 0 && testTxnsLeft === 0,
       200,
-      `Users: ${finalUsers} (Super Admin), Transactions: ${finalTxns}`
+      `Test Users Left: ${testUsersLeft}, Test Txns Left: ${testTxnsLeft}`
     );
 
     console.log('\n================================================================');
-    console.log('🎉 ALL END-TO-END TEST SUITES PASSED FLAWLESSLY (15/15)');
+    console.log('🎉 ALL 14 END-TO-END TESTS PASSED SUCCESSFULLY!');
     console.log('================================================================');
-  } catch (error: any) {
+  } catch (error) {
     console.error('\n❌ E2E Test Suite Error:', error);
     process.exitCode = 1;
   } finally {

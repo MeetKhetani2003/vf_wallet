@@ -1,13 +1,46 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { AuthUser, User, AdminUser, UserRole } from '../types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  AuthUser,
+  User,
+  AdminUser,
+  UserRole,
+  EmployeePermissions,
+  BankAccount,
+} from '../types';
 import { storageService } from '../services/storageService';
 import { authApi, tokenStorage } from '../services/api';
-import { mockAuthService } from '../services/mockAuthService';
+
+const AUTH_MIGRATION_KEY = '@vf_wallet_staff_auth_v4_required';
+
+const EMPTY_PERMISSIONS: EmployeePermissions = {
+  canOcrUpload: false,
+  canDeposit: false,
+  canWithdraw: false,
+  canSetBonus: false,
+  canSetThreshold: false,
+  canManageClients: false,
+};
+
+const FULL_PERMISSIONS: EmployeePermissions = {
+  canOcrUpload: true,
+  canDeposit: true,
+  canWithdraw: true,
+  canSetBonus: true,
+  canSetThreshold: true,
+  canManageClients: true,
+};
 
 interface AuthContextType {
   user: AuthUser | null;
   role: UserRole | null;
+  isSuperAdmin: boolean;
+  permissions: EmployeePermissions;
   isLoading: boolean;
+  loginStaff: (
+    identifier: string,
+    password?: string
+  ) => Promise<{ success: boolean; error?: string }>;
   loginUser: (
     identifier: string,
     password?: string
@@ -31,56 +64,84 @@ interface AuthContextType {
     email?: string;
     phone?: string;
     upiId?: string;
-    bankAccount?: import('../types').BankAccount | null;
+    bankAccount?: BankAccount | null;
     avatarUrl?: string;
   }) => Promise<{ success: boolean; user?: AuthUser; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Helper to normalize backend User/Admin into frontend AuthUser
-const mapBackendUserToAuthUser = (backendUser: any): AuthUser => {
-  const isSuperOrAdmin =
-    backendUser.role === 'ADMIN' || backendUser.role === 'SUPER_ADMIN';
+const normalizePermissions = (
+  isSuper: boolean,
+  raw?: any
+): EmployeePermissions => {
+  if (isSuper) return { ...FULL_PERMISSIONS };
+  if (!raw || typeof raw !== 'object') return { ...EMPTY_PERMISSIONS };
+  return {
+    canOcrUpload: Boolean(raw.canOcrUpload),
+    canDeposit: Boolean(raw.canDeposit),
+    canWithdraw: Boolean(raw.canWithdraw),
+    canSetBonus: Boolean(raw.canSetBonus),
+    canSetThreshold: Boolean(raw.canSetThreshold),
+    canManageClients: Boolean(raw.canManageClients),
+  };
+};
 
-  if (isSuperOrAdmin) {
-    const admin: AdminUser = {
+// Normalizes backend SUPER_ADMIN / ADMIN / EMPLOYEE into frontend Staff AuthUser
+const mapBackendUserToAuthUser = (backendUser: any): AuthUser => {
+  const isSuper =
+    backendUser.role === 'SUPER_ADMIN' ||
+    backendUser.role === 'ADMIN' ||
+    backendUser.isSuperAdmin === true;
+
+  const isStaff = isSuper || backendUser.role === 'EMPLOYEE';
+
+  if (isStaff) {
+    const staff: AdminUser = {
       id: backendUser.id,
       name: backendUser.name,
       email: backendUser.email || `${backendUser.phone}@vfwallet.local`,
       phone: backendUser.phone,
       role: 'admin',
-      adminRoleTitle:
-        backendUser.role === 'SUPER_ADMIN' ? 'Super Administrator' : 'Administrator',
-      avatarUrl:
-        backendUser.avatarUrl ||
-        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      accountType: isSuper ? 'SUPER_ADMIN' : 'EMPLOYEE',
+      isSuperAdmin: isSuper,
+      permissions: normalizePermissions(isSuper, backendUser.permissions),
+      adminRoleTitle: isSuper ? 'Super Administrator' : 'Employee',
+      avatarUrl: backendUser.avatarUrl || undefined,
     };
-    return admin;
+    return staff;
   }
 
-  const user: User = {
+  const client: User = {
     id: backendUser.id,
     name: backendUser.name,
     email: backendUser.email || `${backendUser.phone}@vfwallet.local`,
     phone: backendUser.phone,
     role: 'user',
+    accountType: 'CLIENT',
+    isSuperAdmin: false,
+    permissions: { ...EMPTY_PERMISSIONS },
     status: backendUser.isBlocked ? 'blocked' : 'active',
     createdAt: backendUser.createdAt || new Date().toISOString(),
     bonusPercentage: backendUser.bonusPercentage,
     bonusThresholdLimitPaise: backendUser.bonusThresholdLimitPaise,
     totalBalancePaise: backendUser.totalBalancePaise || 0,
     upiId: backendUser.upiId || undefined,
-    bankAccount: backendUser.bankAccount || (backendUser.bankAccountNumber ? {
-      accountNumber: backendUser.bankAccountNumber,
-      ifsc: backendUser.bankIfsc || '',
-      bankName: backendUser.bankName || '',
-      accountHolderName: backendUser.bankAccountHolderName || backendUser.name,
-    } : undefined),
+    bankAccount:
+      backendUser.bankAccount ||
+      (backendUser.bankAccountNumber
+        ? {
+            accountNumber: backendUser.bankAccountNumber,
+            ifsc: backendUser.bankIfsc || '',
+            bankName: backendUser.bankName || '',
+            accountHolderName:
+              backendUser.bankAccountHolderName || backendUser.name,
+          }
+        : undefined),
     avatarUrl: backendUser.avatarUrl,
     kycStatus: backendUser.kycStatus || 'verified',
   };
-  return user;
+  return client;
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
@@ -89,38 +150,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  /**
-   * Initializes session on app launch:
-   * 1. Checks if a JWT token exists in AsyncStorage.
-   * 2. Calls GET /api/auth/me to fetch latest profile from backend.
-   * 3. Falls back to cached local user if offline.
-   */
   const initAuth = async () => {
     try {
       await storageService.initializeDefaults();
-      const token = await tokenStorage.getToken();
 
-      if (token) {
-        // Fetch current authenticated user from backend API
-        const res = await authApi.getMe();
-        if (res.success && res.user) {
-          const authUser = mapBackendUserToAuthUser(res.user);
-          setUser(authUser);
-          await storageService.setAuthUser(authUser);
-          return;
-        } else if (!res.isNetworkError && (res.status === 401 || res.status === 403)) {
-          // Only clear token if backend explicitly rejected it
-          await tokenStorage.clearToken();
-        }
+      // One-time clean session reset so fresh/migrated installs ALWAYS require manual login first
+      const migrated = await AsyncStorage.getItem(AUTH_MIGRATION_KEY);
+      if (!migrated) {
+        await tokenStorage.clearToken();
+        await storageService.setAuthUser(null);
+        await AsyncStorage.setItem(AUTH_MIGRATION_KEY, 'true');
+        setUser(null);
+        return;
       }
 
-      // Fallback: check cached user from storage
+      const token = await tokenStorage.getToken();
+
+      // Strict check: NO token means NOT logged in — never auto-login from stale cache
+      if (!token) {
+        await storageService.setAuthUser(null);
+        setUser(null);
+        return;
+      }
+
+      // Verify existing persistent JWT session with live backend
+      const res = await authApi.getMe();
+      if (res.success && res.user) {
+        const authUser = mapBackendUserToAuthUser(res.user);
+        setUser(authUser);
+        await storageService.setAuthUser(authUser);
+        return;
+      }
+
+      if (!res.isNetworkError && (res.status === 401 || res.status === 403)) {
+        // Token expired or invalid -> force re-login
+        await tokenStorage.clearToken();
+        await storageService.setAuthUser(null);
+        setUser(null);
+        return;
+      }
+
+      // Network temporarily offline, but user has a valid persisted JWT -> keep session active
       const storedUser = await storageService.getAuthUser();
       setUser(storedUser);
     } catch (e) {
       console.error('Failed to init auth context:', e);
-      const storedUser = await storageService.getAuthUser();
-      setUser(storedUser);
+      setUser(null);
     } finally {
       setIsLoading(false);
     }
@@ -131,122 +206,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   /**
-   * POST /api/auth/login for User accounts
+   * Unified Staff Login (Super Admin & Employees ONLY).
+   * Clients do not have login access.
    */
-  const loginUser = async (identifier: string, password?: string) => {
+  const loginStaff = async (identifier: string, password?: string) => {
     setIsLoading(true);
-
     try {
-      // 1. Try Live Backend API
       const res = await authApi.login(identifier, password);
 
       if (res.success && res.token && res.user) {
-        // Save JWT token
-        await tokenStorage.setToken(res.token);
+        const isStaff =
+          res.user.role === 'SUPER_ADMIN' ||
+          res.user.role === 'ADMIN' ||
+          res.user.role === 'EMPLOYEE';
 
-        const authUser = mapBackendUserToAuthUser(res.user);
-        await storageService.setAuthUser(authUser);
-        setUser(authUser);
-        return { success: true };
-      }
-
-      // 2. Demo User Fallback (e.g. if offline or demo credentials)
-      const fallback = await mockAuthService.loginUser(identifier, password);
-      if (fallback.success && fallback.user) {
-        setUser(fallback.user);
-        return { success: true };
-      }
-
-      return {
-        success: false,
-        error: res.error || fallback.error || 'Invalid phone/email or password.',
-      };
-    } catch (err: any) {
-      const fallback = await mockAuthService.loginUser(identifier, password);
-      if (fallback.success && fallback.user) {
-        setUser(fallback.user);
-        return { success: true };
-      }
-      return { success: false, error: err.message || 'Login failed.' };
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  /**
-   * POST /api/auth/login for Admin accounts
-   */
-  const loginAdmin = async (identifier: string, password?: string) => {
-    setIsLoading(true);
-
-    try {
-      // 1. Try Live Backend API
-      const res = await authApi.login(identifier, password);
-
-      if (res.success && res.token && res.user) {
-        const isSuperOrAdmin =
-          res.user.role === 'ADMIN' || res.user.role === 'SUPER_ADMIN';
-
-        if (!isSuperOrAdmin) {
+        if (!isStaff) {
           return {
             success: false,
-            error: 'Access denied: This account does not have administrator privileges.',
+            error:
+              'Client accounts do not have login access. Only Super Admin and Employees can sign in.',
           };
         }
 
-        // Save JWT token
         await tokenStorage.setToken(res.token);
-
-        const authAdmin = mapBackendUserToAuthUser(res.user);
-        await storageService.setAuthUser(authAdmin);
-        setUser(authAdmin);
-        return { success: true };
-      }
-
-      // 2. Demo Admin Fallback (supports all demo admin chips even if backend is offline)
-      const fallback = await mockAuthService.loginAdmin(identifier, password);
-      if (fallback.success && fallback.admin) {
-        setUser(fallback.admin);
+        const authStaff = mapBackendUserToAuthUser(res.user);
+        await storageService.setAuthUser(authStaff);
+        setUser(authStaff);
         return { success: true };
       }
 
       return {
         success: false,
-        error: res.error || fallback.error || 'Admin verification failed.',
+        error: res.error || 'Invalid phone/email or password.',
       };
     } catch (err: any) {
-      const fallback = await mockAuthService.loginAdmin(identifier, password);
-      if (fallback.success && fallback.admin) {
-        setUser(fallback.admin);
-        return { success: true };
-      }
-      return { success: false, error: err.message || 'Admin login failed.' };
+      return {
+        success: false,
+        error: err?.message || 'Unable to connect to authentication server.',
+      };
     } finally {
       setIsLoading(false);
     }
   };
 
-  /**
-   * Signup for users
-   */
-  const signup = async (data: {
-    name: string;
-    email: string;
-    phone: string;
-    password?: string;
-    upiId?: string;
-  }) => {
-    setIsLoading(true);
-    try {
-      const res = await mockAuthService.signupUser(data);
-      if (res.success && res.user) {
-        setUser(res.user);
-        return { success: true };
-      }
-      return { success: false, error: res.error };
-    } finally {
-      setIsLoading(false);
-    }
+  const loginUser = loginStaff;
+  const loginAdmin = loginStaff;
+
+  const signup = async () => {
+    return {
+      success: false,
+      error:
+        'Public signup is disabled. Please ask Super Admin to create your Employee account.',
+    };
   };
 
   const logout = async () => {
@@ -272,50 +283,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (e) {
       console.warn('Could not refresh session from API:', e);
     }
-
-    const updated = await storageService.getAuthUser();
-    setUser(updated);
   };
 
-  /**
-   * Updates user profile (name, email, phone, upiId, bankAccount, avatarUrl)
-   * both on the live backend and in local session storage.
-   */
   const updateProfile = async (data: {
     name?: string;
     email?: string;
     phone?: string;
     upiId?: string;
-    bankAccount?: import('../types').BankAccount | null;
+    bankAccount?: BankAccount | null;
     avatarUrl?: string;
   }) => {
     try {
-      // 1. Try Live Backend API
       const res = await authApi.updateProfile(data);
       if (res.success && res.user) {
         const updatedAuthUser = mapBackendUserToAuthUser(res.user);
         await storageService.setAuthUser(updatedAuthUser);
         setUser(updatedAuthUser);
         return { success: true, user: updatedAuthUser };
-      }
-
-      if (res.error && !res.isNetworkError) {
-        return { success: false, error: res.error };
-      }
-
-      // 2. Offline fallback
-      if (user) {
-        const updatedLocalUser = {
-          ...user,
-          ...data,
-          bankAccount:
-            data.bankAccount !== undefined
-              ? data.bankAccount || undefined
-              : (user as User).bankAccount,
-        } as AuthUser;
-        await storageService.setAuthUser(updatedLocalUser);
-        setUser(updatedLocalUser);
-        return { success: true, user: updatedLocalUser };
       }
 
       return {
@@ -332,13 +316,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const role = user ? user.role : null;
+  const isSuperAdmin = Boolean(
+    user && ((user as AdminUser).isSuperAdmin || (user as AdminUser).accountType === 'SUPER_ADMIN')
+  );
+  const permissions: EmployeePermissions = isSuperAdmin
+    ? { ...FULL_PERMISSIONS }
+    : normalizePermissions(false, (user as AdminUser)?.permissions);
 
   return (
     <AuthContext.Provider
       value={{
         user,
         role,
+        isSuperAdmin,
+        permissions,
         isLoading,
+        loginStaff,
         loginUser,
         loginAdmin,
         signup,

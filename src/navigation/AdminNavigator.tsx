@@ -1,40 +1,52 @@
 import React from 'react';
-import { StyleSheet, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
+import { useAuth } from '../hooks/useAuth';
 
 import { AdminDashboard } from '../screens/admin/AdminDashboard';
-import { UsersScreen } from '../screens/admin/UsersScreen';
+import { UserManagementScreen } from '../screens/admin/UserManagementScreen';
 import { UserDetailsScreen } from '../screens/admin/UserDetailsScreen';
-import { DepositRequestsScreen } from '../screens/admin/DepositRequestsScreen';
-import { WithdrawalRequestsScreen } from '../screens/admin/WithdrawalRequestsScreen';
+import { ClientOcrDepositScreen } from '../screens/admin/ClientOcrDepositScreen';
+import { ClientWithdrawScreen } from '../screens/admin/ClientWithdrawScreen';
 import { BonusSettingsScreen } from '../screens/admin/BonusSettingsScreen';
 import { AdminTransactionHistory } from '../screens/admin/AdminTransactionHistory';
 import { AdminProfileScreen } from '../screens/admin/AdminProfileScreen';
 import { ResetDataScreen } from '../screens/admin/ResetDataScreen';
-import { ScreenshotVerificationScreen } from '../screens/admin/ScreenshotVerificationScreen';
 import { TransactionDetailsScreen } from '../screens/user/TransactionDetailsScreen';
 
 export type AdminStackParamList = {
   AdminTabs: undefined;
   AdminDashboard: undefined;
   UserDetails: { userId: string };
+  Users: { initialTab?: 'CLIENT' | 'EMPLOYEE' } | undefined;
+  ClientOcrDeposit:
+    | { clientId?: string; initialMode?: 'ocr' | 'manual' }
+    | undefined;
+  ClientWithdraw: { clientId?: string } | undefined;
   BonusSettings: undefined;
   AdminTransactions: undefined;
   TransactionDetails: { transactionId: string };
   ResetData: undefined;
-  ScreenshotVerification: undefined;
-  DepositRequests: undefined;
-  WithdrawalRequests: undefined;
-  Users: undefined;
 };
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator<AdminStackParamList>();
 
 const AdminTabNavigator = () => {
+  const { isSuperAdmin, permissions } = useAuth();
+
+  const canViewClients =
+    isSuperAdmin ||
+    permissions.canManageClients ||
+    permissions.canSetBonus ||
+    permissions.canSetThreshold;
+  const canDeposit =
+    isSuperAdmin || permissions.canOcrUpload || permissions.canDeposit;
+  const canWithdraw = isSuperAdmin || permissions.canWithdraw;
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -74,48 +86,58 @@ const AdminTabNavigator = () => {
           ),
         }}
       />
-      <Tab.Screen
-        name="ScreenshotVerificationTab"
-        component={ScreenshotVerificationScreen}
-        options={{
-          tabBarLabel: 'OCR Verify',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'scan-circle' : 'scan-circle-outline'}
-              size={24}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="DepositRequests"
-        component={DepositRequestsScreen}
-        options={{
-          tabBarLabel: 'Deposits',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'arrow-down-circle' : 'arrow-down-circle-outline'}
-              size={22}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="WithdrawalRequests"
-        component={WithdrawalRequestsScreen}
-        options={{
-          tabBarLabel: 'Payouts',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'arrow-up-circle' : 'arrow-up-circle-outline'}
-              size={22}
-              color={color}
-            />
-          ),
-        }}
-      />
+
+      {canViewClients && (
+        <Tab.Screen
+          name="ClientsTab"
+          component={UserManagementScreen}
+          options={{
+            tabBarLabel: isSuperAdmin ? 'Accounts' : 'Clients',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'people' : 'people-outline'}
+                size={22}
+                color={color}
+              />
+            ),
+          }}
+        />
+      )}
+
+      {canDeposit && (
+        <Tab.Screen
+          name="OcrDepositTab"
+          component={ClientOcrDepositScreen}
+          options={{
+            tabBarLabel: 'OCR Deposit',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'scan-circle' : 'scan-circle-outline'}
+                size={24}
+                color={color}
+              />
+            ),
+          }}
+        />
+      )}
+
+      {canWithdraw && (
+        <Tab.Screen
+          name="WithdrawTab"
+          component={ClientWithdrawScreen}
+          options={{
+            tabBarLabel: 'Withdraw',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'arrow-up-circle' : 'arrow-up-circle-outline'}
+                size={22}
+                color={color}
+              />
+            ),
+          }}
+        />
+      )}
+
       <Tab.Screen
         name="AdminProfile"
         component={AdminProfileScreen}
@@ -144,13 +166,14 @@ export const AdminNavigator = () => {
     >
       <Stack.Screen name="AdminTabs" component={AdminTabNavigator} />
       <Stack.Screen name="AdminDashboard" component={AdminTabNavigator} />
-      <Stack.Screen name="ScreenshotVerification" component={ScreenshotVerificationScreen} />
+      <Stack.Screen name="Users" component={UserManagementScreen} />
       <Stack.Screen name="UserDetails" component={UserDetailsScreen} />
+      <Stack.Screen name="ClientOcrDeposit" component={ClientOcrDepositScreen} />
+      <Stack.Screen name="ClientWithdraw" component={ClientWithdrawScreen} />
       <Stack.Screen name="BonusSettings" component={BonusSettingsScreen} />
       <Stack.Screen name="AdminTransactions" component={AdminTransactionHistory} />
       <Stack.Screen name="TransactionDetails" component={TransactionDetailsScreen} />
       <Stack.Screen name="ResetData" component={ResetDataScreen} />
-      <Stack.Screen name="Users" component={UsersScreen} />
     </Stack.Navigator>
   );
 };

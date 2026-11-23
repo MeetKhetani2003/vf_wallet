@@ -2,6 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Role } from '@prisma/client';
 import prisma from '../utils/prisma';
+import {
+  EmployeePermissions,
+  PermissionKey,
+  resolveUserPermissions,
+  isSuperAdminRole,
+  isStaffRole,
+} from '../utils/permissions';
 
 export interface JwtPayload {
   userId: string;
@@ -14,6 +21,8 @@ export interface AuthenticatedRequest extends Request {
   user?: JwtPayload & {
     name: string;
     isBlocked: boolean;
+    isSuperAdmin: boolean;
+    permissions: EmployeePermissions;
     totalBalancePaise: number;
     bonusPercentage: number;
     bonusThresholdLimitPaise: number;
@@ -24,7 +33,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'vf_wallet_super_secret_jwt_key_202
 
 /**
  * Middleware to authenticate requests using JWT Bearer tokens.
- * Verifies Authorization: Bearer <token> and ensures user is not blocked.
+ * Verifies Authorization: Bearer <token>, ensures user is active, and resolves permissions.
  */
 export const authenticateToken = async (
   req: AuthenticatedRequest,
@@ -55,6 +64,7 @@ export const authenticateToken = async (
         email: true,
         phone: true,
         role: true,
+        permissions: true,
         isBlocked: true,
         totalBalancePaise: true,
         bonusPercentage: true,
@@ -83,6 +93,8 @@ export const authenticateToken = async (
       name: dbUser.name,
       role: dbUser.role,
       isBlocked: dbUser.isBlocked,
+      isSuperAdmin: isSuperAdminRole(dbUser.role),
+      permissions: resolveUserPermissions(dbUser.role, dbUser.permissions),
       totalBalancePaise: dbUser.totalBalancePaise,
       bonusPercentage: dbUser.bonusPercentage,
       bonusThresholdLimitPaise: dbUser.bonusThresholdLimitPaise,
@@ -105,9 +117,9 @@ export const authenticateToken = async (
 };
 
 /**
- * Middleware to enforce ADMIN or SUPER_ADMIN role authorization.
+ * Middleware to allow Super Admin, Admin, or Employee accounts.
  */
-export const requireAdmin = (
+export const requireStaff = (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
@@ -119,12 +131,81 @@ export const requireAdmin = (
     });
   }
 
-  if (req.user.role !== 'ADMIN' && req.user.role !== 'SUPER_ADMIN') {
+  if (!isStaffRole(req.user.role)) {
     return res.status(403).json({
       success: false,
-      error: 'Access denied: Administrator privileges required.',
+      error: 'Access denied: Employee or Super Admin privileges required.',
     });
   }
 
   return next();
+};
+
+/**
+ * Middleware to enforce Super Admin (or legacy Admin) privileges strictly.
+ */
+export const requireSuperAdmin = (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required.',
+    });
+  }
+
+  if (!req.user.isSuperAdmin) {
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied: Super Admin privileges required.',
+    });
+  }
+
+  return next();
+};
+
+/**
+ * Backward-compatible alias for staff access.
+ */
+export const requireAdmin = requireStaff;
+
+/**
+ * Granular Permission Middleware:
+ * Allows Super Admin automatically, or Employee if they have AT LEAST ONE of the specified permissions.
+ */
+export const requireAnyPermission = (...allowedPermissions: PermissionKey[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required.',
+      });
+    }
+
+    if (req.user.isSuperAdmin) {
+      return next();
+    }
+
+    if (!isStaffRole(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: Staff privileges required.',
+      });
+    }
+
+    const hasPerm = allowedPermissions.some(
+      (key) => req.user?.permissions?.[key] === true
+    );
+
+    if (!hasPerm) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied: Missing required permission (${allowedPermissions.join(' or ')}).`,
+      });
+    }
+
+    return next();
+  };
 };

@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -20,8 +19,8 @@ import { formatPaiseToINR } from '../../utils/currency';
 
 export const AdminDashboard = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { user } = useAuth();
-  const { adminStats, transactions, bonusConfig, refreshData } = useWallet();
+  const { user, isSuperAdmin, permissions } = useAuth();
+  const { adminStats, transactions, refreshData } = useWallet();
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -31,15 +30,14 @@ export const AdminDashboard = () => {
     setRefreshing(false);
   };
 
-  const pendingDeposits = transactions.filter(
-    (t) => t.type === 'deposit' && t.status === 'pending'
-  );
-  const pendingWithdrawals = transactions.filter(
-    (t) => t.type === 'withdrawal' && t.status === 'pending'
-  );
-
-  const totalPendingActions =
-    pendingDeposits.length + pendingWithdrawals.length;
+  const canDepositAny =
+    isSuperAdmin || permissions.canOcrUpload || permissions.canDeposit;
+  const canWithdraw = isSuperAdmin || permissions.canWithdraw;
+  const canViewClients =
+    isSuperAdmin ||
+    permissions.canManageClients ||
+    permissions.canSetBonus ||
+    permissions.canSetThreshold;
 
   const recentTransactions = transactions
     .slice()
@@ -47,7 +45,16 @@ export const AdminDashboard = () => {
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     )
-    .slice(0, 5);
+    .slice(0, 6);
+
+  const activePermissionTags = [
+    permissions.canOcrUpload && 'OCR Upload',
+    permissions.canDeposit && 'Deposit',
+    permissions.canWithdraw && 'Withdraw',
+    permissions.canSetBonus && 'Bonus %',
+    permissions.canSetThreshold && 'Threshold',
+    permissions.canManageClients && 'Client Data',
+  ].filter(Boolean) as string[];
 
   return (
     <ScreenContainer
@@ -57,201 +64,238 @@ export const AdminDashboard = () => {
       backgroundColor={colors.background}
     >
       <Header
-        greeting="Admin Console"
-        userName={user?.name || 'Administrator'}
+        greeting={isSuperAdmin ? 'Super Admin Console' : 'Employee Portal'}
+        userName={user?.name || 'Staff Member'}
         showProfile
         onProfilePress={() => navigation.navigate('AdminProfile')}
         rightAction={
-          <View style={styles.adminRolePill}>
-            <Ionicons name="shield-checkmark" size={14} color={colors.primary} />
-            <Text style={styles.adminRoleText}>Super Admin</Text>
+          <View
+            style={[
+              styles.rolePill,
+              !isSuperAdmin && { backgroundColor: '#EDE9FE' },
+            ]}
+          >
+            <Ionicons
+              name={isSuperAdmin ? 'shield-checkmark' : 'person-circle'}
+              size={14}
+              color={isSuperAdmin ? colors.primary : '#7C3AED'}
+            />
+            <Text
+              style={[
+                styles.rolePillText,
+                !isSuperAdmin && { color: '#6D28D9' },
+              ]}
+            >
+              {isSuperAdmin ? 'Super Admin' : 'Employee'}
+            </Text>
           </View>
         }
       />
 
       <View style={styles.content}>
-        {/* Urgent Action Banner if pending requests exist */}
-        {totalPendingActions > 0 && (
-          <View style={styles.alertBanner}>
-            <View style={styles.alertIconCircle}>
-              <Ionicons name="alert-circle" size={20} color={colors.warningDark} />
+        {/* Auto-Accept Operational Mode Strip */}
+        <View style={styles.autoAcceptStrip}>
+          <View style={styles.greenDot} />
+          <Text style={styles.autoAcceptStripText}>
+            Auto-Accept Mode Active • Instant Verified Processing
+          </Text>
+        </View>
+
+        {/* Employee Assigned Permissions Card (for Employees) */}
+        {!isSuperAdmin && (
+          <View style={styles.empPermsBanner}>
+            <Text style={styles.empPermsTitle}>Your Assigned Permissions</Text>
+            <View style={styles.empPermsRow}>
+              {activePermissionTags.length > 0 ? (
+                activePermissionTags.map((tag) => (
+                  <View key={tag} style={styles.empPermPill}>
+                    <Ionicons name="checkmark-circle" size={12} color="#6D28D9" />
+                    <Text style={styles.empPermPillText}>{tag}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.noPermHint}>
+                  No operational permissions assigned yet. Contact Super Admin.
+                </Text>
+              )}
             </View>
-            <View style={styles.alertTextCol}>
-              <Text style={styles.alertTitle}>
-                {totalPendingActions} Requests Require Verification
-              </Text>
-              <Text style={styles.alertSub}>
-                {pendingDeposits.length} deposits & {pendingWithdrawals.length}{' '}
-                withdrawals pending.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.reviewBtn}
-              onPress={() =>
-                navigation.navigate(
-                  pendingDeposits.length > 0 ? 'DepositRequests' : 'WithdrawalRequests'
-                )
-              }
-            >
-              <Text style={styles.reviewBtnText}>Review</Text>
-            </TouchableOpacity>
           </View>
         )}
 
         {/* Section Title */}
         <View style={styles.sectionTitleRow}>
-          <Text style={styles.sectionTitle}>Key Financial Metrics</Text>
-          <Text style={styles.activeBonusTag}>
-            Bonus: {bonusConfig.isEnabled ? `${bonusConfig.bonusPercentage}%` : 'Disabled'}
-          </Text>
+          <Text style={styles.sectionTitle}>Operational Overview</Text>
         </View>
 
-        {/* 6 Statistic Cards in Grid */}
+        {/* Clean Operational Metrics Grid (NO Liability Wallet, NO Pending Approval Queues) */}
         <View style={styles.statsGrid}>
           <StatCard
-            title="Total Users"
-            value={adminStats ? adminStats.totalUsers.toString() : '0'}
-            subtitle="Registered demo accounts"
+            title="Total Clients"
+            value={(adminStats?.totalClients ?? adminStats?.totalUsers ?? 0).toString()}
+            subtitle="Managed client accounts"
             icon="people"
             variant="primary"
-            onPress={() => navigation.navigate('Users')}
+            onPress={canViewClients ? () => navigation.navigate('Users') : undefined}
           />
 
-          <StatCard
-            title="Wallet Liability"
-            value={
-              adminStats
-                ? formatPaiseToINR(adminStats.totalWalletLiabilityPaise)
-                : '₹0'
-            }
-            subtitle="Total user balances"
-            icon="wallet"
-            variant="info"
-          />
+          {isSuperAdmin ? (
+            <StatCard
+              title="Staff Employees"
+              value={(adminStats?.totalEmployees ?? 0).toString()}
+              subtitle="Active login staff"
+              icon="shield-checkmark"
+              variant="info"
+              onPress={() =>
+                navigation.navigate('Users', { initialTab: 'EMPLOYEE' })
+              }
+            />
+          ) : (
+            <StatCard
+              title="Total Transactions"
+              value={(adminStats?.totalTransactionsCount ?? transactions.length).toString()}
+              subtitle="Auto-accepted ledger"
+              icon="receipt"
+              variant="info"
+              onPress={() => navigation.navigate('AdminTransactions')}
+            />
+          )}
 
           <StatCard
-            title="Approved Deposits"
+            title="Total Deposits"
             value={
               adminStats
                 ? formatPaiseToINR(adminStats.totalApprovedDepositsPaise)
                 : '₹0'
             }
-            subtitle="Total deposit volume"
+            subtitle="Auto-credited principal"
             icon="arrow-down-circle"
             variant="success"
-            onPress={() => navigation.navigate('DepositRequests')}
+            onPress={
+              canDepositAny
+                ? () => navigation.navigate('ClientOcrDeposit')
+                : undefined
+            }
           />
 
           <StatCard
-            title="Approved Withdrawals"
+            title="Total Withdrawals"
             value={
               adminStats
                 ? formatPaiseToINR(adminStats.totalApprovedWithdrawalsPaise)
                 : '₹0'
             }
-            subtitle="Total disbursed"
+            subtitle="Instant payouts processed"
             icon="arrow-up-circle"
             variant="danger"
-            onPress={() => navigation.navigate('WithdrawalRequests')}
+            onPress={
+              canWithdraw
+                ? () => navigation.navigate('ClientWithdraw')
+                : undefined
+            }
           />
 
           <StatCard
-            title="Total Bonus Disbursed"
+            title="Bonus Credited"
             value={
               adminStats
                 ? formatPaiseToINR(adminStats.totalBonusGivenPaise)
                 : '₹0'
             }
-            subtitle="Promotional credit"
+            subtitle="Promotional bonus points"
             icon="gift"
             variant="warning"
-            onPress={() => navigation.navigate('BonusSettings')}
           />
 
           <StatCard
-            title="Pending Requests"
-            value={(
-              (adminStats?.pendingDepositRequestsCount || 0) +
-              (adminStats?.pendingWithdrawalRequestsCount || 0)
-            ).toString()}
-            subtitle={`${adminStats?.pendingDepositRequestsCount || 0} dep / ${
-              adminStats?.pendingWithdrawalRequestsCount || 0
-            } wdr`}
-            icon="time"
-            variant={totalPendingActions > 0 ? 'warning' : 'info'}
-            onPress={() => navigation.navigate('DepositRequests')}
+            title="Processed Ledger"
+            value={(adminStats?.totalTransactionsCount ?? transactions.length).toString()}
+            subtitle="All auto-approved entries"
+            icon="document-text"
+            variant="info"
+            onPress={() => navigation.navigate('AdminTransactions')}
           />
         </View>
 
-        {/* Quick Management Shortcuts */}
+        {/* Permission-Gated Quick Actions */}
         <View style={styles.managementCard}>
-          <Text style={styles.managementTitle}>Quick Admin Controls</Text>
+          <Text style={styles.managementTitle}>Quick Operations</Text>
           <View style={styles.actionsGrid}>
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => navigation.navigate('ScreenshotVerification')}
-            >
-              <View style={[styles.actionIconBox, { backgroundColor: '#EDE9FE' }]}>
-                <Ionicons name="scan" size={20} color="#7C3AED" />
-              </View>
-              <Text style={styles.actionItemText}>OCR Verify</Text>
-              {pendingDeposits.length > 0 && (
-                <View style={styles.badgeSmall}>
-                  <Text style={styles.badgeSmallText}>{pendingDeposits.length}</Text>
+            {canDepositAny && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => navigation.navigate('ClientOcrDeposit')}
+              >
+                <View style={[styles.actionIconBox, { backgroundColor: '#EDE9FE' }]}>
+                  <Ionicons name="scan" size={20} color="#7C3AED" />
                 </View>
-              )}
-            </TouchableOpacity>
+                <Text style={styles.actionItemText}>OCR Deposit</Text>
+              </TouchableOpacity>
+            )}
 
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => navigation.navigate('DepositRequests')}
-            >
-              <View style={[styles.actionIconBox, { backgroundColor: colors.lightBlue }]}>
-                <Ionicons name="arrow-down" size={20} color={colors.primary} />
-              </View>
-              <Text style={styles.actionItemText}>Deposits</Text>
-              {pendingDeposits.length > 0 && (
-                <View style={styles.badgeSmall}>
-                  <Text style={styles.badgeSmallText}>{pendingDeposits.length}</Text>
+            {canWithdraw && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => navigation.navigate('ClientWithdraw')}
+              >
+                <View
+                  style={[styles.actionIconBox, { backgroundColor: colors.dangerLight }]}
+                >
+                  <Ionicons name="arrow-up" size={20} color={colors.danger} />
                 </View>
-              )}
-            </TouchableOpacity>
+                <Text style={styles.actionItemText}>Withdraw</Text>
+              </TouchableOpacity>
+            )}
 
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => navigation.navigate('WithdrawalRequests')}
-            >
-              <View style={[styles.actionIconBox, { backgroundColor: colors.dangerLight }]}>
-                <Ionicons name="arrow-up" size={20} color={colors.danger} />
-              </View>
-              <Text style={styles.actionItemText}>Payouts</Text>
-              {pendingWithdrawals.length > 0 && (
-                <View style={styles.badgeSmall}>
-                  <Text style={styles.badgeSmallText}>{pendingWithdrawals.length}</Text>
+            {canViewClients && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() =>
+                  navigation.navigate('Users', { initialTab: 'CLIENT' })
+                }
+              >
+                <View
+                  style={[styles.actionIconBox, { backgroundColor: colors.lightBlue }]}
+                >
+                  <Ionicons name="people" size={20} color={colors.primary} />
                 </View>
-              )}
-            </TouchableOpacity>
+                <Text style={styles.actionItemText}>Clients</Text>
+              </TouchableOpacity>
+            )}
 
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => navigation.navigate('BonusSettings')}
-            >
-              <View style={[styles.actionIconBox, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="options" size={20} color={colors.warningDark} />
-              </View>
-              <Text style={styles.actionItemText}>Bonus (5%)</Text>
-            </TouchableOpacity>
+            {isSuperAdmin ? (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() =>
+                  navigation.navigate('Users', { initialTab: 'EMPLOYEE' })
+                }
+              >
+                <View style={[styles.actionIconBox, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="key" size={20} color={colors.warningDark} />
+                </View>
+                <Text style={styles.actionItemText}>Employees</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => navigation.navigate('AdminTransactions')}
+              >
+                <View style={[styles.actionIconBox, { backgroundColor: '#DCFCE7' }]}>
+                  <Ionicons name="list" size={20} color="#15803D" />
+                </View>
+                <Text style={styles.actionItemText}>Ledger</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
-        {/* Recent Platform Transactions */}
+        {/* Recent Auto-Approved Transactions */}
         <View style={styles.sectionTitleRow}>
-          <Text style={styles.sectionTitle}>Recent Global Transactions</Text>
+          <Text style={styles.sectionTitle}>Recent Transactions</Text>
           {transactions.length > 0 && (
             <TouchableOpacity
               onPress={() => navigation.navigate('AdminTransactions')}
             >
-              <Text style={styles.viewAllText}>View Ledger</Text>
+              <Text style={styles.viewAllText}>View All</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -277,10 +321,10 @@ export const AdminDashboard = () => {
                 size={36}
                 color={colors.textLight}
               />
-              <Text style={styles.zeroStateTitle}>Zero Activity State</Text>
+              <Text style={styles.zeroStateTitle}>No Activity Yet</Text>
               <Text style={styles.zeroStateSub}>
-                No platform transactions yet. New user deposits will appear here
-                once submitted via screenshot OCR.
+                Create a client account and scan a verified receipt screenshot to
+                auto-credit their wallet.
               </Text>
             </View>
           )}
@@ -295,7 +339,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 24,
   },
-  adminRolePill: {
+  rolePill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.lightBlue,
@@ -304,54 +348,73 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     marginRight: 6,
   },
-  adminRoleText: {
+  rolePillText: {
     fontSize: 11,
     fontWeight: '700',
     color: colors.primaryDark,
     marginLeft: 4,
   },
-  alertBanner: {
+  autoAcceptStrip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-  },
-  alertIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#FDE68A',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  alertTextCol: {
-    flex: 1,
-  },
-  alertTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  alertSub: {
-    fontSize: 11,
-    color: '#B45309',
-    marginTop: 2,
-  },
-  reviewBtn: {
-    backgroundColor: colors.primary,
-    paddingVertical: 6,
+    backgroundColor: '#F0FDF4',
     paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    gap: 8,
   },
-  reviewBtnText: {
+  greenDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#16A34A',
+  },
+  autoAcceptStripText: {
     fontSize: 12,
     fontWeight: '700',
-    color: colors.white,
+    color: '#166534',
+  },
+  empPermsBanner: {
+    backgroundColor: '#F5F3FF',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  empPermsTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#5B21B6',
+    marginBottom: 8,
+  },
+  empPermsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  empPermPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.white,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  empPermPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6D28D9',
+  },
+  noPermHint: {
+    fontSize: 12,
+    color: '#6D28D9',
   },
   sectionTitleRow: {
     flexDirection: 'row',
@@ -364,15 +427,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: colors.text,
-  },
-  activeBonusTag: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.primary,
-    backgroundColor: colors.lightBlue,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -395,12 +449,13 @@ const styles = StyleSheet.create({
   },
   actionsGrid: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 10,
   },
   actionItem: {
     alignItems: 'center',
-    width: '23%',
-    position: 'relative',
+    width: '22%',
+    minWidth: 72,
   },
   actionIconBox: {
     width: 48,
@@ -415,23 +470,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.text,
     textAlign: 'center',
-  },
-  badgeSmall: {
-    position: 'absolute',
-    top: -2,
-    right: 4,
-    backgroundColor: colors.danger,
-    borderRadius: 8,
-    minWidth: 16,
-    height: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-  },
-  badgeSmallText: {
-    color: colors.white,
-    fontSize: 9,
-    fontWeight: '800',
   },
   zeroStateBox: {
     alignItems: 'center',
@@ -467,4 +505,3 @@ const styles = StyleSheet.create({
 });
 
 export default AdminDashboard;
-
