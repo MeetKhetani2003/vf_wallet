@@ -167,8 +167,13 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    // Bonus & threshold config (for Clients)
-    let thresholdPaise = 1500000; // Default threshold start limit: ₹15,000 = 1,500,000 paise
+    // Default to today's active running bonus rate & threshold (or defaults if none set)
+    const dailyInfo = await getRunningDailyBonusRate();
+    let finalBonusPercentage = dailyInfo.isActive ? dailyInfo.percentage : 0.0;
+    let thresholdPaise = dailyInfo.isThresholdActive
+      ? dailyInfo.thresholdLimitPaise
+      : 1500000;
+
     const canConfigureThreshold =
       req.user.isSuperAdmin || req.user.permissions.canSetThreshold;
     if (canConfigureThreshold) {
@@ -184,10 +189,6 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
         }
       }
     }
-
-    // Default to today's active running bonus rate (or 0% if none set)
-    const dailyInfo = await getRunningDailyBonusRate();
-    let finalBonusPercentage = dailyInfo.isActive ? dailyInfo.percentage : 0.0;
 
     const canConfigureBonus =
       req.user.isSuperAdmin || req.user.permissions.canSetBonus;

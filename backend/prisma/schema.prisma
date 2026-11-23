@@ -75,14 +75,16 @@ model Transaction {
 }
 
 model DailyBonus {
-  id            String   @id @default(auto()) @map("_id") @db.ObjectId
-  date          String   @unique // YYYY-MM-DD
-  percentage    Float    @default(0.0)
-  isActive      Boolean  @default(true)
-  createdById   String?
-  createdByName String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  date                String   @unique // YYYY-MM-DD
+  percentage          Float    @default(0.0)
+  isActive            Boolean  @default(true)
+  thresholdLimitPaise Int      @default(1500000) // ₹15,000 default threshold start limit
+  isThresholdActive   Boolean  @default(true)
+  createdById         String?
+  createdByName       String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model SystemSetting {

@@ -53,14 +53,14 @@ const PERMISSION_ITEMS: Array<{
   },
   {
     key: 'canSetBonus',
-    title: 'Set Client Bonus %',
-    desc: 'Configure custom cashback bonus rate per client',
+    title: 'Daily Bonus & Rates',
+    desc: 'Manage running daily deposit bonus percentage and client bonus rates',
     icon: 'gift-outline',
   },
   {
     key: 'canSetThreshold',
-    title: 'Set Threshold Limit',
-    desc: 'Configure withdrawal threshold limit per client',
+    title: 'Daily Threshold & Rules',
+    desc: 'Manage running daily withdrawal threshold limit and client rules',
     icon: 'shield-outline',
   },
   {

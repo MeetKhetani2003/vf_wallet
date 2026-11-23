@@ -38,6 +38,8 @@ export const AdminDashboard = () => {
     permissions.canManageClients ||
     permissions.canSetBonus ||
     permissions.canSetThreshold;
+  const canManageDailyRules =
+    isSuperAdmin || permissions.canSetBonus || permissions.canSetThreshold;
 
   const recentTransactions = transactions
     .slice()
@@ -259,6 +261,20 @@ export const AdminDashboard = () => {
                   <Ionicons name="people" size={20} color={colors.primary} />
                 </View>
                 <Text style={styles.actionItemText}>Clients</Text>
+              </TouchableOpacity>
+            )}
+
+            {canManageDailyRules && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => navigation.navigate('BonusSettings')}
+              >
+                <View
+                  style={[styles.actionIconBox, { backgroundColor: '#FEF3C7' }]}
+                >
+                  <Ionicons name="options-outline" size={20} color={colors.warningDark} />
+                </View>
+                <Text style={styles.actionItemText}>Daily Rules</Text>
               </TouchableOpacity>
             )}
 

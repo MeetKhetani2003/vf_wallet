@@ -88,8 +88,12 @@ router.post(
 // GET /api/admin/daily-bonus (Accessible to all staff to see today's active rate)
 router.get('/daily-bonus', getDailyBonusConfig);
 
-// POST /api/admin/daily-bonus (Super Admin ONLY to set daily rate)
-router.post('/daily-bonus', requireSuperAdmin, updateDailyBonusConfig);
+// POST /api/admin/daily-bonus (Super Admin OR staff granted canSetBonus or canSetThreshold)
+router.post(
+  '/daily-bonus',
+  requireAnyPermission('canSetBonus', 'canSetThreshold'),
+  updateDailyBonusConfig
+);
 
 // Master Transaction Ledger
 // GET /api/admin/transactions

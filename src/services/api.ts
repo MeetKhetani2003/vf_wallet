@@ -453,8 +453,25 @@ export const adminApi = {
     return apiClient.get('/admin/daily-bonus');
   },
 
-  async setDailyBonus(percentage: number, isActive: boolean = true) {
-    return apiClient.post('/admin/daily-bonus', { percentage, isActive });
+  async setDailyBonus(
+    data:
+      | {
+          percentage?: number;
+          isActive?: boolean;
+          thresholdLimit?: number;
+          thresholdLimitPaise?: number;
+          isThresholdActive?: boolean;
+        }
+      | number,
+    legacyIsActive: boolean = true
+  ) {
+    if (typeof data === 'number') {
+      return apiClient.post('/admin/daily-bonus', {
+        percentage: data,
+        isActive: legacyIsActive,
+      });
+    }
+    return apiClient.post('/admin/daily-bonus', data);
   },
 };
 

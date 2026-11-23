@@ -6,6 +6,7 @@ import { isClientRole } from '../utils/permissions';
 import {
   getRunningDailyBonusRate,
   setRunningDailyBonusRate,
+  setRunningDailySettings,
   getTodayDateString,
 } from '../utils/dailyBonus';
 
@@ -110,14 +111,18 @@ export const createClientDeposit = async (
       if (existingClient) {
         client = existingClient;
       } else {
+        // Fetch running daily rates for new client default setup
+        const dailySettings = await getRunningDailyBonusRate();
         // Create new client account on-the-fly
         client = await prisma.user.create({
           data: {
             name: cleanName,
             phone: cleanClientPhone,
             role: Role.CLIENT,
-            bonusPercentage: 0.0,
-            bonusThresholdLimitPaise: 1500000, // ₹15,000 default threshold start limit
+            bonusPercentage: dailySettings.isActive ? dailySettings.percentage : 0.0,
+            bonusThresholdLimitPaise: dailySettings.isThresholdActive
+              ? dailySettings.thresholdLimitPaise
+              : 1500000,
             totalBalancePaise: 0,
           },
         });
@@ -674,51 +679,115 @@ export const getDailyBonusConfig = async (
 
 /**
  * POST /api/admin/daily-bonus
- * Super Admin ONLY: Set the running bonus rate for the day.
+ * Manage running daily bonus and running threshold limit.
+ * Permitted for Super Admin and employees granted `canSetBonus` or `canSetThreshold`.
  */
 export const updateDailyBonusConfig = async (
   req: AuthenticatedRequest,
   res: Response
 ) => {
   try {
-    if (!req.user || !req.user.isSuperAdmin) {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required.',
+      });
+    }
+
+    const isSuperAdmin = Boolean(req.user.isSuperAdmin);
+    const canSetBonus = isSuperAdmin || Boolean(req.user.permissions?.canSetBonus);
+    const canSetThreshold = isSuperAdmin || Boolean(req.user.permissions?.canSetThreshold);
+
+    if (!canSetBonus && !canSetThreshold) {
       return res.status(403).json({
         success: false,
-        error: 'Only Super Admin can configure daily running bonus rates.',
+        error: 'Access denied: You do not have permission to manage daily bonus or threshold rules.',
       });
     }
 
-    const { percentage, isActive = true } = req.body;
-    const parsedRate = Number(percentage);
-    if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) {
-      return res.status(400).json({
-        success: false,
-        error: 'Bonus percentage must be between 0% and 100%.',
-      });
+    const {
+      percentage,
+      isActive,
+      thresholdLimit,
+      thresholdLimitPaise,
+      isThresholdActive,
+    } = req.body;
+
+    let parsedRate: number | undefined = undefined;
+    let parsedIsActive: boolean | undefined = undefined;
+
+    // Validate Bonus modifications
+    if (percentage !== undefined || isActive !== undefined) {
+      if (!canSetBonus) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied: You do not have permission to modify daily bonus rates.',
+        });
+      }
+      if (percentage !== undefined) {
+        parsedRate = Number(percentage);
+        if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) {
+          return res.status(400).json({
+            success: false,
+            error: 'Bonus percentage must be between 0% and 100%.',
+          });
+        }
+      }
+      if (isActive !== undefined) {
+        parsedIsActive = Boolean(isActive);
+      }
     }
 
-    const record = await setRunningDailyBonusRate(
-      parsedRate,
-      req.user.userId,
-      req.user.name,
-      Boolean(isActive)
-    );
+    // Validate Threshold modifications
+    let parsedThresholdPaise: number | undefined = undefined;
+    let parsedIsThresholdActive: boolean | undefined = undefined;
+
+    if (
+      thresholdLimit !== undefined ||
+      thresholdLimitPaise !== undefined ||
+      isThresholdActive !== undefined
+    ) {
+      if (!canSetThreshold) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied: You do not have permission to modify daily threshold rules.',
+        });
+      }
+      if (thresholdLimitPaise !== undefined) {
+        parsedThresholdPaise = Math.max(0, Math.round(Number(thresholdLimitPaise)));
+      } else if (thresholdLimit !== undefined) {
+        parsedThresholdPaise = Math.max(0, Math.round(Number(thresholdLimit) * 100));
+      }
+      if (isThresholdActive !== undefined) {
+        parsedIsThresholdActive = Boolean(isThresholdActive);
+      }
+    }
+
+    const record = await setRunningDailySettings({
+      percentage: parsedRate,
+      isActive: parsedIsActive,
+      thresholdLimitPaise: parsedThresholdPaise,
+      isThresholdActive: parsedIsThresholdActive,
+      adminId: req.user.userId,
+      adminName: req.user.name,
+    });
 
     return res.status(200).json({
       success: true,
-      message: `Daily running bonus successfully set to ${parsedRate}% (${
-        isActive ? 'Active' : 'Inactive'
-      }).`,
+      message: 'Daily rates and threshold rules updated successfully.',
       dailyBonus: record,
-      percentage: parsedRate,
-      isActive: Boolean(isActive),
+      percentage: record.percentage,
+      isActive: record.isActive,
+      thresholdLimitPaise: record.thresholdLimitPaise,
+      thresholdLimitRupees: Math.round(record.thresholdLimitPaise / 100),
+      isThresholdActive: record.isThresholdActive,
       date: record.date,
     });
   } catch (error: any) {
-    console.error('Error updating daily bonus config:', error);
+    console.error('Error updating daily bonus & threshold config:', error);
     return res.status(500).json({
       success: false,
-      error: 'Failed to update daily bonus configuration.',
+      error: 'Failed to update daily bonus or threshold configuration.',
     });
   }
 };
