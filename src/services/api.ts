@@ -226,7 +226,13 @@ export const adminApi = {
     bonusPercentage?: number;
     bonusThresholdLimit?: number;
   }) {
-    return apiClient.post('/admin/users/create', data);
+    // For clients: automatically provide an internal dummy password to maintain
+    // 100% backward compatibility with deployed backends that require a 4+ char password.
+    const payload = { ...data };
+    if (!payload.password && (payload.userType === 'CLIENT' || payload.role === 'CLIENT' || !payload.userType)) {
+      payload.password = `Client@${Date.now()}`;
+    }
+    return apiClient.post('/admin/users/create', payload);
   },
 
   async updateUser(

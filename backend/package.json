@@ -4,7 +4,8 @@
   "description": "VF Wallet Backend API with Node.js, Express, TypeScript, and Prisma",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate && tsc",
+    "postinstall": "prisma generate",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "purge": "ts-node scripts/purgeDemoData.ts",
@@ -18,7 +19,8 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "prisma": "^5.22.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -26,7 +28,6 @@
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.17.10",
-    "prisma": "^5.22.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.7.2"
   }
