@@ -31,7 +31,7 @@ model User {
   id                        String        @id @default(auto()) @map("_id") @db.ObjectId
   name                      String
   phone                     String        @unique
-  email                     String?       @unique
+  email                     String?
   passwordHash              String?
   role                      Role          @default(CLIENT)
   permissions               Json?
@@ -60,8 +60,8 @@ model Transaction {
   amountPaise        Int
   bonusPaise         Int               @default(0)
   withdrawablePaise  Int               @default(0)
-  utr                String?           @unique
-  imageHash          String?           @unique
+  utr                String?
+  imageHash          String?
   imageUrl           String?
   paymentApp         String?
   rawOcrData         Json?

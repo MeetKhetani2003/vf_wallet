@@ -252,7 +252,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
           ? email.trim().toLowerCase()
           : null;
       if (cleanEmail && cleanEmail !== currentUser.email) {
-        const existingEmail = await prisma.user.findUnique({
+        const existingEmail = await prisma.user.findFirst({
           where: { email: cleanEmail },
         });
         if (existingEmail) {

@@ -154,7 +154,7 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     // Check if email already registered (if provided)
     if (cleanEmail) {
       const existingEmail = await withDbRetry(() =>
-        prisma.user.findUnique({
+        prisma.user.findFirst({
           where: { email: cleanEmail },
         })
       );
@@ -211,15 +211,15 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
         data: {
           name: name.trim(),
           phone: cleanPhone,
-          email: cleanEmail,
-          passwordHash,
+          email: cleanEmail || undefined,
+          passwordHash: passwordHash || undefined,
           role: targetRole,
           permissions: resolvedPerms ? (resolvedPerms as any) : undefined,
           isBlocked: false,
           bonusPercentage: finalBonusPercentage,
           bonusThresholdLimitPaise: thresholdPaise,
           totalBalancePaise: 0,
-          upiId: cleanUpi,
+          upiId: cleanUpi || undefined,
           bankAccountNumber: bankAccount?.accountNumber?.trim() || null,
           bankIfsc: bankAccount?.ifsc?.trim()?.toUpperCase() || null,
           bankName: bankAccount?.bankName?.trim() || null,
@@ -421,7 +421,7 @@ export const updateUser = async (req: AuthenticatedRequest, res: Response) => {
           ? email.trim().toLowerCase()
           : null;
       if (cleanEmail && cleanEmail !== target.email) {
-        const dup = await prisma.user.findUnique({ where: { email: cleanEmail } });
+        const dup = await prisma.user.findFirst({ where: { email: cleanEmail } });
         if (dup) {
           return res.status(409).json({
             success: false,
