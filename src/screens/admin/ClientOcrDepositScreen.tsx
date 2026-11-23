@@ -357,14 +357,53 @@ export const ClientOcrDepositScreen = () => {
       return;
     }
 
-    if (amountPaise <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter or verify a valid deposit amount.');
-      return;
-    }
+    if (mode === 'ocr') {
+      if (!imageUri) {
+        Alert.alert('Upload Receipt', 'Please upload or capture a payment screenshot for OCR deposit.');
+        return;
+      }
 
-    if (mode === 'ocr' && !imageUri) {
-      Alert.alert('Upload Receipt', 'Please upload or capture a payment screenshot for OCR deposit.');
-      return;
+      if (!amountText || amountPaise <= 0) {
+        Alert.alert(
+          'Amount Not Detected ⚠️',
+          'OCR could not extract the deposit amount from this screenshot.\n\nScanned values cannot be typed manually in OCR mode. To enter deposit details manually, please switch to Direct Deposit.',
+          canManual
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Switch to Direct Deposit', onPress: () => setMode('manual') },
+              ]
+            : [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      if (!utrText.trim()) {
+        Alert.alert(
+          'UTR Not Detected ⚠️',
+          'OCR could not extract a valid UTR / Reference number from this receipt.\n\nScanned values cannot be modified in OCR mode. To enter reference details manually, please switch to Direct Deposit.',
+          canManual
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Switch to Direct Deposit', onPress: () => setMode('manual') },
+              ]
+            : [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      // Anti-tamper validation
+      if (extracted?.amountPaise && extracted.amountPaise > 0 && extracted.amountPaise !== amountPaise) {
+        Alert.alert(
+          'Anti-Tamper Warning 🛡️',
+          'The deposit amount does not match the OCR scanned amount. To modify the amount, please switch to Direct Deposit.'
+        );
+        return;
+      }
+    } else {
+      if (amountPaise <= 0) {
+        Alert.alert('Invalid Amount', 'Please enter a valid deposit amount.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -683,30 +722,73 @@ export const ClientOcrDepositScreen = () => {
             {mode === 'ocr' ? '3. Verify Extracted Details' : '2. Enter Deposit Details'}
           </Text>
 
+          {/* Anti-Tamper Notice in OCR mode */}
+          {mode === 'ocr' && (
+            <View style={styles.ocrLockedNotice}>
+              <View style={styles.ocrLockedHeader}>
+                <Ionicons name="lock-closed" size={16} color="#D97706" />
+                <Text style={styles.ocrLockedTitle}>Anti-Tamper Rule: Scanned Values Locked</Text>
+              </View>
+              <Text style={styles.ocrLockedDesc}>
+                Values extracted from receipt cannot be modified in OCR mode. To enter or adjust deposit details manually, please switch to Direct Deposit.
+              </Text>
+              {canManual && (
+                <TouchableOpacity
+                  style={styles.switchModeActionBtn}
+                  onPress={() => setMode('manual')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="create-outline" size={15} color={colors.primary} />
+                  <Text style={styles.switchModeActionText}>Switch to Direct Deposit to Modify ✏️</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           <CustomInput
             label="Deposit Amount (₹)"
             placeholder="e.g. 5000"
             keyboardType="decimal-pad"
             leftIcon="cash-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={amountText}
             onChangeText={setAmountText}
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Extracted from OCR scan (Locked). Switch to Direct Deposit to modify.'
+                : undefined
+            }
           />
 
           <CustomInput
             label="UTR / 12-Digit Reference Number"
             placeholder="e.g. 432156789012"
             leftIcon="barcode-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={utrText}
             onChangeText={setUtrText}
-            helperText="Protected by duplicate UTR anti-fraud guard"
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Extracted from OCR scan (Locked). Switch to Direct Deposit to modify.'
+                : 'Protected by duplicate UTR anti-fraud guard'
+            }
           />
 
           <CustomInput
             label="Payment App / Channel"
             placeholder="e.g. Google Pay, PhonePe, Paytm, Bank IMPS"
             leftIcon="phone-portrait-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={paymentAppText}
             onChangeText={setPaymentAppText}
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Detected from OCR receipt (Locked)'
+                : undefined
+            }
           />
 
           <CustomInput
@@ -1465,6 +1547,48 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 18,
+  },
+  ocrLockedNotice: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.2,
+    borderColor: '#FCD34D',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+  },
+  ocrLockedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  ocrLockedTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  ocrLockedDesc: {
+    fontSize: 12,
+    color: '#B45309',
+    lineHeight: 17,
+  },
+  switchModeActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginTop: 10,
+    alignSelf: 'flex-start',
+  },
+  switchModeActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primary,
   },
 });
 

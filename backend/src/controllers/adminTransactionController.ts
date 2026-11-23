@@ -43,10 +43,12 @@ export const createClientDeposit = async (
     } = req.body;
 
     const isOcrSubmission =
-      submissionSource === 'ocr' ||
-      submissionSource === 'gallery' ||
-      submissionSource === 'whatsapp_share' ||
-      Boolean(imageHash || imageUrl || screenshotUri);
+      submissionSource === 'manual'
+        ? false
+        : submissionSource === 'ocr' ||
+          submissionSource === 'gallery' ||
+          submissionSource === 'whatsapp_share' ||
+          Boolean(imageHash || imageUrl || screenshotUri);
 
     // Granular Permission Check
     if (!req.user.isSuperAdmin) {
@@ -150,6 +152,56 @@ export const createClientDeposit = async (
         ? imageHash.trim()
         : null;
 
+    // Strict Anti-Tamper Rule: Scanned values (amount & UTR) cannot be modified in OCR mode.
+    // If manual adjustments or direct entry are needed, staff must submit as Direct Deposit ('manual').
+    if (isOcrSubmission) {
+      if (!cleanImageHash && !imageUrl && !screenshotUri) {
+        return res.status(400).json({
+          success: false,
+          error: 'A receipt screenshot is required for OCR deposit submissions.',
+        });
+      }
+
+      if (rawOcrData && typeof rawOcrData === 'object') {
+        const ocrAmountPaise =
+          typeof rawOcrData.amountPaise === 'number' ? rawOcrData.amountPaise : null;
+
+        if (ocrAmountPaise && ocrAmountPaise > 0) {
+          if (ocrAmountPaise !== parsedAmountPaise) {
+            return res.status(400).json({
+              success: false,
+              error: `Anti-tamper violation: Scanned deposit amount (₹${(ocrAmountPaise / 100).toLocaleString('en-IN')}) cannot be modified in OCR mode. To enter or modify deposit values manually, please submit via Direct Deposit.`,
+            });
+          }
+        } else {
+          return res.status(400).json({
+            success: false,
+            error:
+              'OCR could not detect the deposit amount from this screenshot. To enter values manually, please submit via Direct Deposit.',
+          });
+        }
+
+        const detectedUtr =
+          rawOcrData.utrNumber ||
+          rawOcrData.upiRefNumber ||
+          (rawOcrData.transactionId && !rawOcrData.transactionId.startsWith('TXN-')
+            ? rawOcrData.transactionId
+            : null);
+
+        if (detectedUtr) {
+          const cleanDetected = detectedUtr.toString().trim().replace(/[\s-]/g, '').toLowerCase();
+          const cleanProvided = cleanUtr ? cleanUtr.trim().replace(/[\s-]/g, '').toLowerCase() : '';
+
+          if (cleanDetected && cleanProvided && cleanDetected !== cleanProvided) {
+            return res.status(400).json({
+              success: false,
+              error: `Anti-tamper violation: Scanned UTR (${detectedUtr}) cannot be modified in OCR mode. To enter or modify reference details manually, please submit via Direct Deposit.`,
+            });
+          }
+        }
+      }
+    }
+
     // 1. Anti-fraud: Check duplicate screenshot hash
     if (cleanImageHash) {
       const existingHash = await prisma.transaction.findFirst({
@@ -214,11 +266,13 @@ export const createClientDeposit = async (
                 notes: notes || undefined,
                 dailyBonusApplied: bonusRate,
                 dailyBonusDate: dailyBonusInfo.date,
+                submissionSource: isOcrSubmission ? 'ocr' : 'manual',
               }
             : {
                 notes: notes || undefined,
                 dailyBonusApplied: bonusRate,
                 dailyBonusDate: dailyBonusInfo.date,
+                submissionSource: isOcrSubmission ? 'ocr' : 'manual',
               },
           processedByAdminId: req.user.userId,
           processedByName: req.user.name,

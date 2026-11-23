@@ -44,10 +44,11 @@ export const CustomInput: React.FC<CustomInputProps> = ({
       {label && <Text style={styles.label}>{label}</Text>}
 
       <Pressable
-        onPress={() => inputRef.current?.focus()}
+        onPress={() => props.editable !== false && inputRef.current?.focus()}
         style={[
           styles.inputContainer,
           isFocused && styles.focusedInput,
+          props.editable === false && styles.disabledInputContainer,
           !!error && styles.errorInput,
           props.multiline && styles.multilineContainer,
         ]}
@@ -68,6 +69,7 @@ export const CustomInput: React.FC<CustomInputProps> = ({
           {...props}
           style={[
             styles.input,
+            props.editable === false && styles.disabledInput,
             props.multiline && styles.multilineInput,
             props.style,
           ]}
@@ -145,6 +147,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
+  },
+  disabledInputContainer: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+  },
+  disabledInput: {
+    color: '#334155',
+    fontWeight: '600',
   },
   errorInput: {
     borderColor: colors.danger,
