@@ -8,6 +8,7 @@ import {
   Modal,
   FlatList,
   TextInput,
+  Platform,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -537,6 +538,11 @@ export const ClientWithdrawScreen = () => {
         onRequestClose={() => setPickerVisible(false)}
       >
         <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setPickerVisible(false)}
+          />
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Client Account</Text>
@@ -557,9 +563,12 @@ export const ClientWithdrawScreen = () => {
             </View>
 
             <FlatList
+              style={{ flex: 1 }}
               data={filteredClients}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingBottom: 24 }}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 32, flexGrow: 1 }}
               ListEmptyComponent={
                 <View style={styles.emptyListBox}>
                   <Text style={styles.emptyListText}>No active clients found.</Text>
@@ -796,8 +805,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
-    padding: 18,
+    height: '85%',
+    maxHeight: '90%',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 16,
   },
   modalHeader: {
     flexDirection: 'row',

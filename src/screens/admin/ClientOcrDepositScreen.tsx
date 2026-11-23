@@ -10,6 +10,9 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
+  Platform,
+  KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -763,6 +766,11 @@ export const ClientOcrDepositScreen = () => {
         onRequestClose={() => setPickerVisible(false)}
       >
         <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setPickerVisible(false)}
+          />
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Client Account</Text>
@@ -809,9 +817,12 @@ export const ClientOcrDepositScreen = () => {
             )}
 
             <FlatList
+              style={{ flex: 1 }}
               data={filteredClients}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingBottom: 24 }}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 32, flexGrow: 1 }}
               ListEmptyComponent={
                 <View style={styles.emptyListBox}>
                   <Text style={styles.emptyListText}>
@@ -882,67 +893,80 @@ export const ClientOcrDepositScreen = () => {
         transparent
         onRequestClose={() => setQuickCreateVisible(false)}
       >
-        <View style={styles.modalOverlayCenter}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlayCenter}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setQuickCreateVisible(false)}
+          />
           <View style={styles.quickCreateCard}>
-            <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Add Client Account</Text>
-                <Text style={styles.quickCreateSubText}>
-                  Only Name & Phone required • Running Bonus: {effectiveBonusPct}%
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => setQuickCreateVisible(false)}>
-                <Ionicons name="close" size={24} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ marginTop: 14 }}>
-              <Text style={styles.quickFieldLabel}>Client Full Name *</Text>
-              <TextInput
-                style={styles.quickInput}
-                placeholder="e.g. Ramesh Patel"
-                placeholderTextColor={colors.textLight}
-                value={quickClientName}
-                onChangeText={setQuickClientName}
-              />
-
-              <Text style={[styles.quickFieldLabel, { marginTop: 12 }]}>
-                Phone Number (10 Digits) *
-              </Text>
-              <TextInput
-                style={styles.quickInput}
-                placeholder="e.g. 9876543210"
-                placeholderTextColor={colors.textLight}
-                keyboardType="phone-pad"
-                maxLength={10}
-                value={quickClientPhone}
-                onChangeText={setQuickClientPhone}
-              />
-
-              <View style={styles.dailyBonusNoticePill}>
-                <Ionicons name="gift" size={16} color="#15803D" />
-                <Text style={styles.dailyBonusNoticeText}>
-                  Today's running bonus ({effectiveBonusPct}%) will automatically apply to this client's deposits.
-                </Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={styles.modalTitle}>Add Client Account</Text>
+                  <Text style={styles.quickCreateSubText}>
+                    Only Name & Phone required • Running Bonus: {effectiveBonusPct}%
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setQuickCreateVisible(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.quickModalActions}>
-                <SecondaryButton
-                  title="Cancel"
-                  onPress={() => setQuickCreateVisible(false)}
-                  style={{ flex: 1 }}
-                  disabled={isQuickCreating}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.quickFieldLabel}>Client Full Name *</Text>
+                <TextInput
+                  style={styles.quickInput}
+                  placeholder="e.g. Ramesh Patel"
+                  placeholderTextColor={colors.textLight}
+                  value={quickClientName}
+                  onChangeText={setQuickClientName}
                 />
-                <PrimaryButton
-                  title={isQuickCreating ? 'Creating...' : 'Create & Select'}
-                  onPress={handleQuickCreateClient}
-                  loading={isQuickCreating}
-                  style={{ flex: 1 }}
+
+                <Text style={[styles.quickFieldLabel, { marginTop: 12 }]}>
+                  Phone Number (10 Digits) *
+                </Text>
+                <TextInput
+                  style={styles.quickInput}
+                  placeholder="e.g. 9876543210"
+                  placeholderTextColor={colors.textLight}
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                  value={quickClientPhone}
+                  onChangeText={setQuickClientPhone}
                 />
+
+                <View style={styles.dailyBonusNoticePill}>
+                  <Ionicons name="gift" size={16} color="#15803D" />
+                  <Text style={styles.dailyBonusNoticeText}>
+                    Today's running bonus ({effectiveBonusPct}%) will automatically apply to this client's deposits.
+                  </Text>
+                </View>
+
+                <View style={styles.quickModalActions}>
+                  <SecondaryButton
+                    title="Cancel"
+                    onPress={() => setQuickCreateVisible(false)}
+                    style={{ flex: 1 }}
+                    disabled={isQuickCreating}
+                  />
+                  <PrimaryButton
+                    title={isQuickCreating ? 'Creating...' : 'Create & Select'}
+                    onPress={handleQuickCreateClient}
+                    loading={isQuickCreating}
+                    style={{ flex: 1 }}
+                  />
+                </View>
               </View>
-            </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Receipt Image Fullscreen Viewer */}
@@ -1245,8 +1269,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
-    padding: 18,
+    height: '85%',
+    maxHeight: '90%',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 16,
   },
   modalHeader: {
     flexDirection: 'row',
