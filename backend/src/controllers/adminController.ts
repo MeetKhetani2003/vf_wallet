@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import bcrypt from 'bcryptjs';
-import prisma from '../utils/prisma';
+import prisma, { withDbRetry } from '../utils/prisma';
 import { Role, TransactionStatus, TransactionType } from '@prisma/client';
 import { AuthenticatedRequest } from '../middleware/auth';
 import {
@@ -137,10 +137,12 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
         ? email.trim().toLowerCase()
         : null;
 
-    // Check if phone already registered
-    const existingPhone = await prisma.user.findUnique({
-      where: { phone: cleanPhone },
-    });
+    // Check if phone already registered (with auto-reconnect retry on serverless drop)
+    const existingPhone = await withDbRetry(() =>
+      prisma.user.findUnique({
+        where: { phone: cleanPhone },
+      })
+    );
 
     if (existingPhone) {
       return res.status(409).json({
@@ -151,9 +153,11 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
 
     // Check if email already registered (if provided)
     if (cleanEmail) {
-      const existingEmail = await prisma.user.findUnique({
-        where: { email: cleanEmail },
-      });
+      const existingEmail = await withDbRetry(() =>
+        prisma.user.findUnique({
+          where: { email: cleanEmail },
+        })
+      );
 
       if (existingEmail) {
         return res.status(409).json({
@@ -202,25 +206,27 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     const cleanUpi =
       upiId && typeof upiId === 'string' && upiId.trim() ? upiId.trim() : null;
 
-    const newUser = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        phone: cleanPhone,
-        email: cleanEmail,
-        passwordHash,
-        role: targetRole,
-        permissions: resolvedPerms ? (resolvedPerms as any) : undefined,
-        isBlocked: false,
-        bonusPercentage: finalBonusPercentage,
-        bonusThresholdLimitPaise: thresholdPaise,
-        totalBalancePaise: 0,
-        upiId: cleanUpi,
-        bankAccountNumber: bankAccount?.accountNumber?.trim() || null,
-        bankIfsc: bankAccount?.ifsc?.trim()?.toUpperCase() || null,
-        bankName: bankAccount?.bankName?.trim() || null,
-        bankAccountHolderName: bankAccount?.accountHolderName?.trim() || null,
-      },
-    });
+    const newUser = await withDbRetry(() =>
+      prisma.user.create({
+        data: {
+          name: name.trim(),
+          phone: cleanPhone,
+          email: cleanEmail,
+          passwordHash,
+          role: targetRole,
+          permissions: resolvedPerms ? (resolvedPerms as any) : undefined,
+          isBlocked: false,
+          bonusPercentage: finalBonusPercentage,
+          bonusThresholdLimitPaise: thresholdPaise,
+          totalBalancePaise: 0,
+          upiId: cleanUpi,
+          bankAccountNumber: bankAccount?.accountNumber?.trim() || null,
+          bankIfsc: bankAccount?.ifsc?.trim()?.toUpperCase() || null,
+          bankName: bankAccount?.bankName?.trim() || null,
+          bankAccountHolderName: bankAccount?.accountHolderName?.trim() || null,
+        },
+      })
+    );
 
     return res.status(201).json({
       success: true,
@@ -234,7 +240,7 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     console.error('Error in createUser:', error);
     return res.status(500).json({
       success: false,
-      error: 'Failed to create account.',
+      error: error?.message || 'Failed to create account.',
     });
   }
 };
