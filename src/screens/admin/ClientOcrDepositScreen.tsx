@@ -36,6 +36,9 @@ type RouteParams = {
   ClientOcrDeposit?: {
     clientId?: string;
     initialMode?: 'ocr' | 'manual';
+    imageUri?: string;
+    source?: 'gallery' | 'whatsapp_share';
+    sharedAt?: number;
   };
 };
 
@@ -49,6 +52,7 @@ export const ClientOcrDepositScreen = () => {
   const canManual = isSuperAdmin || permissions.canDeposit;
 
   const [mode, setMode] = useState<'ocr' | 'manual'>(() => {
+    if (route.params?.imageUri) return 'ocr';
     if (route.params?.initialMode === 'manual' && canManual) return 'manual';
     if (canOcr) return 'ocr';
     return 'manual';
@@ -223,6 +227,14 @@ export const ClientOcrDepositScreen = () => {
       setIsScanning(false);
     }
   };
+
+  // Auto-scan screenshot when received from Gallery or WhatsApp share intent
+  useEffect(() => {
+    if (route.params?.imageUri) {
+      setMode('ocr');
+      runOcrOnImage(route.params.imageUri);
+    }
+  }, [route.params?.imageUri, route.params?.sharedAt]);
 
   const handlePickFromGallery = async () => {
     try {
@@ -583,6 +595,19 @@ export const ClientOcrDepositScreen = () => {
                     <Text style={styles.zoomOverlayText}>Tap to Inspect</Text>
                   </View>
                 </TouchableOpacity>
+
+                {route.params?.source === 'gallery' && (
+                  <View style={styles.sourceTag}>
+                    <Ionicons name="images-outline" size={14} color="#2563EB" />
+                    <Text style={styles.sourceTagText}>Shared from Gallery (Auto-Scanned)</Text>
+                  </View>
+                )}
+                {route.params?.source === 'whatsapp_share' && (
+                  <View style={[styles.sourceTag, { backgroundColor: '#E6F8EF' }]}>
+                    <Ionicons name="logo-whatsapp" size={14} color="#16A36A" />
+                    <Text style={[styles.sourceTagText, { color: '#0E7047' }]}>Shared from WhatsApp</Text>
+                  </View>
+                )}
 
                 {isScanning ? (
                   <View style={styles.scanningBox}>
@@ -1589,6 +1614,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: colors.primary,
+  },
+  sourceTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 6,
+    alignSelf: 'flex-start',
+  },
+  sourceTagText: {
+    fontSize: 12,
+    color: '#1D4ED8',
+    fontWeight: '700',
   },
 });
 

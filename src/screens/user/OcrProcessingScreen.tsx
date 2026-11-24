@@ -212,6 +212,13 @@ export const OcrProcessingScreen = () => {
               <Text style={styles.sourceTagText}>Shared from WhatsApp</Text>
             </View>
           )}
+
+          {source === 'gallery' && (
+            <View style={[styles.sourceTag, { backgroundColor: '#EFF6FF' }]}>
+              <Ionicons name="images-outline" size={14} color="#2563EB" />
+              <Text style={[styles.sourceTagText, { color: '#1D4ED8' }]}>Shared from Gallery</Text>
+            </View>
+          )}
         </View>
 
         {/* Processing State Indicator */}

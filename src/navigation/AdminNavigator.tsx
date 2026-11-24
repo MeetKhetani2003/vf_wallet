@@ -23,7 +23,13 @@ export type AdminStackParamList = {
   UserDetails: { userId: string };
   Users: { initialTab?: 'CLIENT' | 'EMPLOYEE' } | undefined;
   ClientOcrDeposit:
-    | { clientId?: string; initialMode?: 'ocr' | 'manual' }
+    | {
+        clientId?: string;
+        initialMode?: 'ocr' | 'manual';
+        imageUri?: string;
+        source?: 'gallery' | 'whatsapp_share';
+        sharedAt?: number;
+      }
     | undefined;
   ClientWithdraw: { clientId?: string } | undefined;
   BonusSettings: undefined;

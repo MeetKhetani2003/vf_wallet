@@ -18,7 +18,6 @@ import { TransactionRow } from '../../components/cards/TransactionRow';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
-import { useShareIntentListener } from '../../hooks/useShareIntentListener';
 
 export const UserDashboard = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
@@ -33,24 +32,10 @@ export const UserDashboard = () => {
     refreshData,
   } = useWallet();
 
-  const { sharedImage, clearSharedImage } = useShareIntentListener();
-
   const [refreshing, setRefreshing] = useState(false);
   const [filterType, setFilterType] = useState<
     'all' | 'deposit' | 'withdrawal' | 'bonus'
   >('all');
-
-  // Automatic WhatsApp Share Intent Listener
-  useEffect(() => {
-    if (sharedImage && sharedImage.uri) {
-      const uri = sharedImage.uri;
-      clearSharedImage();
-      navigation.navigate('OcrProcessing', {
-        imageUri: uri,
-        source: 'whatsapp_share',
-      });
-    }
-  }, [sharedImage, clearSharedImage, navigation]);
 
   useFocusEffect(
     useCallback(() => {
