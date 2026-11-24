@@ -483,6 +483,10 @@ export const adminApi = {
     return apiClient.post('/admin/backup/reset-app');
   },
 
+  async deleteClient(clientId: string) {
+    return apiClient.post(`/admin/backup/delete-client/${clientId}`);
+  },
+
   async deleteTransaction(transactionId: string) {
     return apiClient.post(`/admin/backup/delete-transaction/${transactionId}`);
   },
