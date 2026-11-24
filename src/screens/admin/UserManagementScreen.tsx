@@ -59,12 +59,6 @@ const PERMISSION_DEFINITIONS: Array<{
     icon: 'gift-outline',
   },
   {
-    key: 'canSetThreshold',
-    title: 'Daily Threshold & Rules',
-    desc: 'Manage running daily withdrawal threshold limit and client rules',
-    icon: 'shield-outline',
-  },
-  {
     key: 'canManageClients',
     title: 'Manage Client Data',
     desc: 'Create, edit, update UPI/bank & block/unblock clients',
@@ -77,7 +71,6 @@ const DEFAULT_PERMS: EmployeePermissions = {
   canDeposit: false,
   canWithdraw: false,
   canSetBonus: false,
-  canSetThreshold: false,
   canManageClients: false,
 };
 
@@ -95,7 +88,6 @@ export const UserManagementScreen = () => {
 
   const canCreateClient = isSuperAdmin || permissions.canManageClients;
   const canSetBonus = isSuperAdmin || permissions.canSetBonus;
-  const canSetThreshold = isSuperAdmin || permissions.canSetThreshold;
 
   const [activeSegment, setActiveSegment] = useState<'CLIENT' | 'EMPLOYEE'>(
     route.params?.initialTab === 'EMPLOYEE' && isSuperAdmin ? 'EMPLOYEE' : 'CLIENT'
@@ -115,8 +107,7 @@ export const UserManagementScreen = () => {
   const [email, setEmail] = useState('');
   const [upiId, setUpiId] = useState('');
   const [password, setPassword] = useState('');
-  const [bonusPercentage, setBonusPercentage] = useState('10.0');
-  const [bonusThresholdLimit, setBonusThresholdLimit] = useState('10000');
+  const [bonusPercentage, setBonusPercentage] = useState('');
   const [empPermissions, setEmpPermissions] =
     useState<EmployeePermissions>({ ...DEFAULT_PERMS });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -145,12 +136,28 @@ export const UserManagementScreen = () => {
             createdAt: u.createdAt,
             upiId: u.upiId || undefined,
             bankAccount: u.bankAccount || undefined,
-            bonusPercentage: u.bonusPercentage ?? 10.0,
-            bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+            bonusPercentage: u.bonusPercentage ?? undefined,
             totalBalancePaise: u.totalBalancePaise || 0,
+            activeBonusPaise: u.activeBonusPaise || 0,
+            lastDepositAmountPaise: u.lastDepositAmountPaise || 0,
+            cycleWithdrawnPaise: u.cycleWithdrawnPaise || 0,
+            isBonusDeductedInCycle: Boolean(u.isBonusDeductedInCycle),
             totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
+            totalCashDepositedPaise:
+              u.totalCashDepositedPaise ?? u.totalDepositPrincipalPaise ?? 0,
+            totalPointsDepositedPaise: u.totalPointsDepositedPaise ?? 0,
+            totalPointsWithdrawnPaise: u.totalPointsWithdrawnPaise ?? 0,
+            totalCashWithdrawnPaise: u.totalCashWithdrawnPaise ?? 0,
+            totalBonusDeductedPaise: u.totalBonusDeductedPaise ?? 0,
             withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
-            isThresholdReached: Boolean(u.isThresholdReached),
+            lastLatitude: u.lastLatitude,
+            lastLongitude: u.lastLongitude,
+            lastLocationAccuracy: u.lastLocationAccuracy,
+            lastLocationAddress: u.lastLocationAddress,
+            lastLocationUpdatedAt: u.lastLocationUpdatedAt,
+            createdById: u.createdById,
+            createdByName: u.createdByName,
+            createdByRole: u.createdByRole,
           }));
           setAccounts(mapped);
         } else {
@@ -178,8 +185,7 @@ export const UserManagementScreen = () => {
     setEmail('');
     setUpiId('');
     setPassword('');
-    setBonusPercentage('10.0');
-    setBonusThresholdLimit('15000');
+    setBonusPercentage('');
     setEmpPermissions({ ...DEFAULT_PERMS });
     setFormError('');
     setModalVisible(true);
@@ -212,24 +218,14 @@ export const UserManagementScreen = () => {
       }
     }
 
-    const parsedBonus = parseFloat(bonusPercentage);
-    if (
-      createType === 'CLIENT' &&
-      canSetBonus &&
-      (isNaN(parsedBonus) || parsedBonus < 0 || parsedBonus > 100)
-    ) {
-      setFormError('Bonus % must be between 0 and 100.');
-      return;
-    }
-
-    const parsedLimit = parseFloat(bonusThresholdLimit);
-    if (
-      createType === 'CLIENT' &&
-      canSetThreshold &&
-      (isNaN(parsedLimit) || parsedLimit < 0)
-    ) {
-      setFormError('Threshold limit must be a positive number.');
-      return;
+    let parsedBonus: number | undefined = undefined;
+    if (createType === 'CLIENT' && canSetBonus && bonusPercentage.trim()) {
+      const b = parseFloat(bonusPercentage);
+      if (isNaN(b) || b < 0 || b > 100) {
+        setFormError('Bonus % must be between 0 and 100.');
+        return;
+      }
+      parsedBonus = b;
     }
 
     setIsSubmitting(true);
@@ -248,8 +244,9 @@ export const UserManagementScreen = () => {
       } else {
         // Clients strictly require NO password and NO login credentials
         payload.upiId = upiId.trim() || undefined;
-        if (canSetBonus) payload.bonusPercentage = parsedBonus;
-        if (canSetThreshold) payload.bonusThresholdLimit = parsedLimit;
+        if (canSetBonus && parsedBonus !== undefined) {
+          payload.bonusPercentage = parsedBonus;
+        }
       }
 
       const res = await adminApi.createUser(payload);
@@ -261,9 +258,11 @@ export const UserManagementScreen = () => {
             : 'Client Created! ✅',
           createType === 'EMPLOYEE'
             ? `Employee "${name.trim()}" can now log in with phone ${phone.trim()} and their assigned permissions.`
-            : `Client "${name.trim()}" (${phone.trim()}) has been added with ${
-                canSetBonus ? parsedBonus : 10
-              }% bonus (no login required).`
+            : `Client "${name.trim()}" (${phone.trim()}) added${
+                parsedBonus !== undefined
+                  ? ` with custom ${parsedBonus}% bonus.`
+                  : ' (will use running daily bonus rate).'
+              }`
         );
         setModalVisible(false);
         if (activeSegment !== createType) {
@@ -289,7 +288,8 @@ export const UserManagementScreen = () => {
       return (
         u.name.toLowerCase().includes(q) ||
         u.phone.includes(q) ||
-        (u.email && u.email.toLowerCase().includes(q))
+        (u.email && u.email.toLowerCase().includes(q)) ||
+        (u.createdByName && u.createdByName.toLowerCase().includes(q))
       );
     }
     return true;
@@ -679,18 +679,19 @@ export const UserManagementScreen = () => {
                     </View>
                   </View>
 
-                  {canSetThreshold && (
-                    <View style={{ marginTop: 6 }}>
-                      <Text style={styles.fieldLabel}>Threshold Start Limit (₹)</Text>
+                  {canSetBonus && (
+                    <View style={{ marginTop: 8 }}>
+                      <Text style={styles.fieldLabel}>Custom Bonus % (Optional)</Text>
                       <TextInput
                         style={styles.textInput}
-                        placeholder="15000"
-                        keyboardType="numeric"
-                        value={bonusThresholdLimit}
-                        onChangeText={setBonusThresholdLimit}
+                        placeholder="Leave empty for running daily bonus"
+                        placeholderTextColor={colors.textLight}
+                        keyboardType="decimal-pad"
+                        value={bonusPercentage}
+                        onChangeText={setBonusPercentage}
                       />
                       <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
-                        Withdrawals reaching/exceeding this limit will have the bonus excluded.
+                        Client-specific bonus will NOT auto-assign. Leave empty so daily running bonus applies automatically.
                       </Text>
                     </View>
                   )}
@@ -730,7 +731,6 @@ export const UserManagementScreen = () => {
                             canDeposit: true,
                             canWithdraw: true,
                             canSetBonus: true,
-                            canSetThreshold: true,
                             canManageClients: true,
                           })
                         }
@@ -744,7 +744,6 @@ export const UserManagementScreen = () => {
                             canDeposit: false,
                             canWithdraw: false,
                             canSetBonus: false,
-                            canSetThreshold: false,
                             canManageClients: false,
                           })
                         }

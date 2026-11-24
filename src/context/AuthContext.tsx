@@ -124,8 +124,14 @@ const mapBackendUserToAuthUser = (backendUser: any): AuthUser => {
     status: backendUser.isBlocked ? 'blocked' : 'active',
     createdAt: backendUser.createdAt || new Date().toISOString(),
     bonusPercentage: backendUser.bonusPercentage,
-    bonusThresholdLimitPaise: backendUser.bonusThresholdLimitPaise,
     totalBalancePaise: backendUser.totalBalancePaise || 0,
+    activeBonusPaise: backendUser.activeBonusPaise || 0,
+    lastDepositAmountPaise: backendUser.lastDepositAmountPaise || 0,
+    cycleWithdrawnPaise: backendUser.cycleWithdrawnPaise || 0,
+    isBonusDeductedInCycle: Boolean(backendUser.isBonusDeductedInCycle),
+    lastLatitude: backendUser.lastLatitude ?? null,
+    lastLongitude: backendUser.lastLongitude ?? null,
+    lastLocationUpdatedAt: backendUser.lastLocationUpdatedAt ?? null,
     upiId: backendUser.upiId || undefined,
     bankAccount:
       backendUser.bankAccount ||

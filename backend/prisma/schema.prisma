@@ -36,9 +36,27 @@ model User {
   role                      Role          @default(CLIENT)
   permissions               Json?
   isBlocked                 Boolean       @default(false)
-  bonusPercentage           Float         @default(10.0)
-  bonusThresholdLimitPaise  Int           @default(1000000)
-  totalBalancePaise         Int           @default(0)
+  bonusPercentage           Float         @default(0)
+  totalBalancePaise         Int           @default(0) // Total wallet points (1 point = 1 INR)
+  
+  // Deposit & Withdrawal Points Cycle Logic
+  activeBonusPaise          Int           @default(0) // Active bonus points from current cycle
+  lastDepositAmountPaise    Int           @default(0) // Principal amount of the latest deposit in cycle
+  cycleWithdrawnPaise       Int           @default(0) // Points withdrawn so far in current cycle
+  isBonusDeductedInCycle    Boolean       @default(false) // Whether bonus points have been cut in this cycle
+
+  // Employee Location Tracking
+  lastLatitude              Float?
+  lastLongitude             Float?
+  lastLocationAccuracy      Float?
+  lastLocationAddress       String?
+  lastLocationUpdatedAt     DateTime?
+
+  // Creator / Onboarding tracking (Which employee/admin added this client)
+  createdById               String?
+  createdByName             String?
+  createdByRole             String?
+
   upiId                     String?
   bankAccountNumber         String?
   bankIfsc                  String?
@@ -49,6 +67,20 @@ model User {
   updatedAt                 DateTime      @updatedAt
 
   transactions              Transaction[]
+  locations                 EmployeeLocation[]
+}
+
+model EmployeeLocation {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  employeeId  String   @db.ObjectId
+  employee    User     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  latitude    Float
+  longitude   Float
+  accuracy    Float?
+  address     String?
+  createdAt   DateTime @default(now())
+
+  @@index([employeeId])
 }
 
 model Transaction {
@@ -57,8 +89,9 @@ model Transaction {
   user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   type               TransactionType
   status             TransactionStatus @default(PENDING)
-  amountPaise        Int
-  bonusPaise         Int               @default(0)
+  amountPaise        Int               // Points (deposited or requested to withdraw)
+  bonusPaise         Int               @default(0) // Bonus points added (deposit) or deducted (withdrawal)
+  cashPaidPaise      Int               @default(0) // Actual cash (INR) paid out on withdrawal
   withdrawablePaise  Int               @default(0)
   utr                String?
   imageHash          String?
@@ -68,6 +101,11 @@ model Transaction {
   rejectionReason    String?
   processedByAdminId String?
   processedByName    String?
+  // Soft delete & archive/backup tracking
+  isArchived         Boolean           @default(false)
+  archivedAt         DateTime?
+  archivedById       String?
+  backupBatchId      String?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -79,8 +117,6 @@ model DailyBonus {
   date                String   @unique // YYYY-MM-DD
   percentage          Float    @default(0.0)
   isActive            Boolean  @default(true)
-  thresholdLimitPaise Int      @default(1500000) // ₹15,000 default threshold start limit
-  isThresholdActive   Boolean  @default(true)
   createdById         String?
   createdByName       String?
   createdAt           DateTime @default(now())

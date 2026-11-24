@@ -18,6 +18,8 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
 
+type DateFilterType = 'all' | 'today' | 'yesterday' | 'week' | 'month';
+
 export const TransactionHistoryScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
   const { user } = useAuth();
@@ -25,11 +27,9 @@ export const TransactionHistoryScreen = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<
-    'all' | 'deposit' | 'withdrawal' | 'bonus'
+    'all' | 'deposit' | 'withdrawal'
   >('all');
-  const [selectedStatus, setSelectedStatus] = useState<
-    'all' | 'approved' | 'pending' | 'rejected'
-  >('all');
+  const [dateFilter, setDateFilter] = useState<DateFilterType>('all');
   const [refreshing, setRefreshing] = useState(false);
 
   useFocusEffect(
@@ -44,6 +44,21 @@ export const TransactionHistoryScreen = () => {
     setRefreshing(false);
   };
 
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+
+  const yesterdayDate = new Date(now);
+  yesterdayDate.setDate(now.getDate() - 1);
+  const yesterdayStart = new Date(yesterdayDate.getFullYear(), yesterdayDate.getMonth(), yesterdayDate.getDate()).getTime();
+  const yesterdayEnd = new Date(yesterdayDate.getFullYear(), yesterdayDate.getMonth(), yesterdayDate.getDate(), 23, 59, 59, 999).getTime();
+
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(now.getDate() - 7);
+  const sevenDaysStart = new Date(sevenDaysAgo.getFullYear(), sevenDaysAgo.getMonth(), sevenDaysAgo.getDate()).getTime();
+
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
   const userTransactions = transactions
     .filter((t) => t.userId === user?.id)
     .sort(
@@ -56,10 +71,18 @@ export const TransactionHistoryScreen = () => {
     if (selectedType !== 'all' && txn.type !== selectedType) {
       return false;
     }
-    // Status filter
-    if (selectedStatus !== 'all' && txn.status !== selectedStatus) {
-      return false;
+    // Date filter
+    const txnTime = new Date(txn.createdAt).getTime();
+    if (dateFilter === 'today') {
+      if (txnTime < todayStart || txnTime > todayEnd) return false;
+    } else if (dateFilter === 'yesterday') {
+      if (txnTime < yesterdayStart || txnTime > yesterdayEnd) return false;
+    } else if (dateFilter === 'week') {
+      if (txnTime < sevenDaysStart) return false;
+    } else if (dateFilter === 'month') {
+      if (txnTime < startOfMonth) return false;
     }
+
     // Search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -110,13 +133,12 @@ export const TransactionHistoryScreen = () => {
           style={styles.chipRow}
           contentContainerStyle={styles.chipRowContent}
         >
-          {(['all', 'deposit', 'withdrawal', 'bonus'] as const).map((type) => {
+          {(['all', 'deposit', 'withdrawal'] as const).map((type) => {
             const isSelected = selectedType === type;
             const labels = {
               all: 'All Types',
-              deposit: 'Deposits',
-              withdrawal: 'Withdrawals',
-              bonus: 'Bonuses',
+              deposit: 'Deposits 📥',
+              withdrawal: 'Withdrawals 📤',
             };
             return (
               <TouchableOpacity
@@ -140,29 +162,31 @@ export const TransactionHistoryScreen = () => {
           })}
         </ScrollView>
 
-        {/* Status Filter Chips */}
+        {/* Date Filter Chips */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.chipRow}
           contentContainerStyle={styles.chipRowContent}
         >
-          {(['all', 'approved', 'pending', 'rejected'] as const).map((status) => {
-            const isSelected = selectedStatus === status;
-            const labels = {
-              all: 'All Status',
-              approved: 'Approved ✅',
-              pending: 'Pending ⏳',
-              rejected: 'Rejected ❌',
-            };
+          {(
+            [
+              { key: 'all', label: 'All Dates' },
+              { key: 'today', label: 'Today' },
+              { key: 'yesterday', label: 'Yesterday' },
+              { key: 'week', label: 'Last 7 Days' },
+              { key: 'month', label: 'This Month' },
+            ] as const
+          ).map((item) => {
+            const isSelected = dateFilter === item.key;
             return (
               <TouchableOpacity
-                key={status}
+                key={item.key}
                 style={[
                   styles.statusChip,
                   isSelected && styles.statusChipSelected,
                 ]}
-                onPress={() => setSelectedStatus(status)}
+                onPress={() => setDateFilter(item.key)}
               >
                 <Text
                   style={[
@@ -170,7 +194,7 @@ export const TransactionHistoryScreen = () => {
                     isSelected && styles.statusChipTextSelected,
                   ]}
                 >
-                  {labels[status]}
+                  {item.label}
                 </Text>
               </TouchableOpacity>
             );
@@ -207,7 +231,7 @@ export const TransactionHistoryScreen = () => {
               actionLabel="Clear Filters"
               onAction={() => {
                 setSelectedType('all');
-                setSelectedStatus('all');
+                setDateFilter('all');
                 setSearchQuery('');
               }}
             />

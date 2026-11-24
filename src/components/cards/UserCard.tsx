@@ -57,6 +57,14 @@ export const UserCard: React.FC<UserCardProps> = ({
             <Text style={styles.idText}>
               +91 {user.phone}
             </Text>
+            {user.accountType !== 'EMPLOYEE' && (
+              <Text style={styles.addedByText}>
+                Added by:{' '}
+                <Text style={styles.addedByName}>
+                  {user.createdByName || 'Admin'}
+                </Text>
+              </Text>
+            )}
             <Text style={styles.dateText}>Added: {regDate}</Text>
           </View>
         </View>
@@ -64,52 +72,100 @@ export const UserCard: React.FC<UserCardProps> = ({
         <StatusBadge status={user.status} size="sm" />
       </View>
 
-      {/* Bonus & Threshold Configuration Row */}
+      {/* Bonus, Points Balance & Cycle Configuration Row */}
       <View style={styles.bonusBadgeRow}>
-        <View style={styles.bonusChip}>
-          <Ionicons name="sparkles" size={12} color="#B45309" />
-          <Text style={styles.bonusChipText}>
-            Bonus: <Text style={styles.bonusChipBold}>{user.bonusPercentage ?? 10}%</Text>
+        <View style={[styles.bonusChip, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}>
+          <Ionicons name="wallet-outline" size={12} color="#15803D" />
+          <Text style={[styles.bonusChipText, { color: '#166534' }]}>
+            Balance:{' '}
+            <Text style={[styles.bonusChipBold, { color: '#15803D' }]}>
+              {(
+                (user.totalBalancePaise ?? walletSummary.availableBalancePaise ?? 0) /
+                100
+              ).toLocaleString('en-IN')}{' '}
+              Pts
+            </Text>
           </Text>
         </View>
 
-        <View style={styles.limitChip}>
-          <Ionicons name="shield-checkmark-outline" size={12} color={colors.primary} />
+        <View style={user.bonusPercentage ? styles.customBonusChip : styles.limitChip}>
+          <Ionicons
+            name={user.bonusPercentage ? 'gift-outline' : 'repeat-outline'}
+            size={12}
+            color={user.bonusPercentage ? '#166534' : colors.primary}
+          />
           <Text style={styles.limitChipText}>
-            Limit: <Text style={styles.limitChipBold}>{formatPaiseToINR(user.bonusThresholdLimitPaise ?? 1000000)}</Text>
+            {user.bonusPercentage ? (
+              <>
+                Custom Bonus:{' '}
+                <Text style={[styles.limitChipBold, { color: '#166534' }]}>
+                  {user.bonusPercentage}%
+                </Text>
+              </>
+            ) : (
+              <>
+                Active Bonus:{' '}
+                <Text style={styles.limitChipBold}>
+                  {((user.activeBonusPaise ?? 0) / 100).toLocaleString('en-IN')} Pts
+                </Text>
+              </>
+            )}
           </Text>
         </View>
       </View>
 
       <View style={styles.divider} />
 
-      {/* Financial Metrics */}
+      {/* 4 Core Financial Metrics */}
       <View style={styles.metricsGrid}>
         <View style={styles.metricCol}>
-          <Text style={styles.metricLabel}>Current Balance</Text>
-          <Text style={[styles.metricValue, styles.balanceValue]}>
-            {formatPaiseToINR(walletSummary.availableBalancePaise)}
+          <Text style={styles.metricLabel}>Cash Deposited</Text>
+          <Text style={[styles.metricValue, { color: colors.success }]}>
+            {formatPaiseToINR(
+              user.totalCashDepositedPaise ??
+                walletSummary.totalCashDepositedPaise ??
+                walletSummary.totalDepositPaise ??
+                0
+            )}
           </Text>
         </View>
 
         <View style={styles.metricCol}>
-          <Text style={styles.metricLabel}>Total Deposit</Text>
-          <Text style={styles.metricValue}>
-            {formatPaiseToINR(walletSummary.totalDepositPaise)}
+          <Text style={styles.metricLabel}>Points Deposited</Text>
+          <Text style={[styles.metricValue, { color: colors.primary }]}>
+            {(
+              (user.totalPointsDepositedPaise ??
+                walletSummary.totalPointsDepositedPaise ??
+                (walletSummary.totalDepositPaise || 0) +
+                  (walletSummary.totalBonusPaise || 0)) /
+              100
+            ).toLocaleString('en-IN')}{' '}
+            Pts
           </Text>
         </View>
 
         <View style={styles.metricCol}>
-          <Text style={styles.metricLabel}>Total Withdraw</Text>
-          <Text style={styles.metricValue}>
-            {formatPaiseToINR(walletSummary.totalWithdrawalPaise)}
+          <Text style={styles.metricLabel}>Points Withdrawn</Text>
+          <Text style={[styles.metricValue, { color: colors.danger }]}>
+            {(
+              (user.totalPointsWithdrawnPaise ??
+                walletSummary.totalPointsWithdrawnPaise ??
+                walletSummary.totalWithdrawalPaise ??
+                0) / 100
+            ).toLocaleString('en-IN')}{' '}
+            Pts
           </Text>
         </View>
 
         <View style={styles.metricCol}>
-          <Text style={styles.metricLabel}>Total Bonus</Text>
-          <Text style={[styles.metricValue, styles.bonusValue]}>
-            {formatPaiseToINR(walletSummary.totalBonusPaise)}
+          <Text style={styles.metricLabel}>Cash Withdrawn</Text>
+          <Text style={[styles.metricValue, { color: '#B45309' }]}>
+            {formatPaiseToINR(
+              user.totalCashWithdrawnPaise ??
+                walletSummary.totalCashWithdrawnPaise ??
+                walletSummary.totalWithdrawalPaise ??
+                0
+            )}
           </Text>
         </View>
       </View>
@@ -181,6 +237,15 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginTop: 2,
   },
+  addedByText: {
+    fontSize: 11,
+    color: colors.primary,
+    marginTop: 1,
+  },
+  addedByName: {
+    fontWeight: '700',
+    color: colors.primaryDark || colors.primary,
+  },
   dateText: {
     fontSize: 11,
     color: colors.textMuted,
@@ -212,6 +277,17 @@ const styles = StyleSheet.create({
   bonusChipBold: {
     fontWeight: '700',
     color: '#78350F',
+  },
+  customBonusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
   limitChip: {
     flexDirection: 'row',

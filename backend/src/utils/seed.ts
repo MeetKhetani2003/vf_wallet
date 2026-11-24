@@ -38,7 +38,6 @@ export async function seedDefaultAdmin() {
           role: SUPER_ADMIN_CONFIG.role,
           isBlocked: false,
           bonusPercentage: 10.0,
-          bonusThresholdLimitPaise: 1000000,
           totalBalancePaise: 0,
         },
       });

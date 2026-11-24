@@ -65,33 +65,15 @@ export const WithdrawScreen = () => {
   const [successModalVisible, setSuccessModalVisible] = useState(false);
   const [createdTxnId, setCreatedTxnId] = useState('');
 
-  // Balance and Rule-Based Threshold Calculations
+  // Balance and Points Cycle Calculations
   const totalBalancePaise = userWallet ? userWallet.availableBalancePaise : 0;
   const totalDepositPaise = userWallet ? userWallet.totalDepositPaise : 0;
   const totalBonusPaise = userWallet ? userWallet.totalBonusPaise : 0;
-  const alreadyWithdrawnPaise = userWallet
-    ? userWallet.totalWithdrawalPaise
-    : 0;
+  const activeBonusPaise = userWallet?.activeBonusPaise || 0;
+  const isBonusDeductedInCycle = Boolean(userWallet?.isBonusDeductedInCycle);
+  const hasActiveBonus = activeBonusPaise > 0 && !isBonusDeductedInCycle;
 
-  const thresholdLimitPaise =
-    userWallet?.bonusThresholdLimitPaise ??
-    currentUser?.bonusThresholdLimitPaise ??
-    1000000; // default ₹10,000
-
-  const isThresholdReached =
-    userWallet?.isThresholdReached ??
-    totalBalancePaise >= thresholdLimitPaise;
-
-  // Real Money withdrawable under platform rules:
-  // If points >= threshold, withdrawable = min(totalBalance, depositedPrincipal).
-  // Otherwise, full balance is eligible.
-  const eligibleWithdrawablePaise =
-    userWallet?.withdrawablePaise !== undefined
-      ? userWallet.withdrawablePaise
-      : isThresholdReached
-      ? Math.min(totalBalancePaise, totalDepositPaise)
-      : totalBalancePaise;
-
+  const eligibleWithdrawablePaise = totalBalancePaise;
   const maxWithdrawableRupees = paiseToRupees(eligibleWithdrawablePaise);
 
   const quickPercentages = [
@@ -110,36 +92,6 @@ export const WithdrawScreen = () => {
       return;
     }
 
-    if (requestedPaise > totalBalancePaise) {
-      setError(
-        `Insufficient points. Your current wallet balance is ${formatPaiseToINR(
-          totalBalancePaise
-        )}.`
-      );
-      return;
-    }
-
-    if (requestedPaise > eligibleWithdrawablePaise) {
-      if (isThresholdReached) {
-        setError(
-          `Requested payout of ${formatPaiseToINR(
-            requestedPaise
-          )} exceeds eligible withdrawable real cash (${formatPaiseToINR(
-            eligibleWithdrawablePaise
-          )}). As your points have reached or exceeded your threshold limit of ${formatPaiseToINR(
-            thresholdLimitPaise
-          )}, bonus points cannot be withdrawn.`
-        );
-      } else {
-        setError(
-          `Requested amount exceeds eligible withdrawable cash of ${formatPaiseToINR(
-            eligibleWithdrawablePaise
-          )}.`
-        );
-      }
-      return;
-    }
-
     // Central validation
     const validation = validateWithdrawal(eligibleWithdrawablePaise, requestedPaise);
     if (!validation.isValid) {
@@ -147,12 +99,7 @@ export const WithdrawScreen = () => {
       return;
     }
 
-    if (payoutMethod === 'upi') {
-      if (!upiId.trim()) {
-        setError('Please enter a valid UPI ID for withdrawal.');
-        return;
-      }
-    } else {
+    if (payoutMethod === 'bank') {
       if (!accountNumber.trim()) {
         setError('Please enter your Bank Account Number.');
         return;
@@ -171,8 +118,10 @@ export const WithdrawScreen = () => {
     const res = await createWithdrawal({
       amountPaise: requestedPaise,
       paymentMethod:
-        payoutMethod === 'upi' ? `UPI (${upiId})` : `Bank (${bankName || 'IMPS'})`,
-      upiId: payoutMethod === 'upi' ? upiId.trim() : undefined,
+        payoutMethod === 'upi'
+          ? (upiId.trim() ? `UPI (${upiId.trim()})` : 'UPI Transfer')
+          : `Bank (${bankName || 'IMPS'})`,
+      upiId: payoutMethod === 'upi' && upiId.trim() ? upiId.trim() : undefined,
       bankDetails:
         payoutMethod === 'bank'
           ? {
@@ -245,32 +194,27 @@ export const WithdrawScreen = () => {
               </Text>
             </View>
             <View style={styles.gridCol}>
-              <Text style={styles.gridLabel}>Threshold Limit</Text>
+              <Text style={styles.gridLabel}>Active Bonus</Text>
               <Text style={styles.gridValue}>
-                {formatPaiseToINR(thresholdLimitPaise)}
+                {formatPaiseToINR(activeBonusPaise)}
               </Text>
             </View>
           </View>
         </View>
 
-        {/* Threshold Warning Notice if total points reach or exceed the assigned user limit */}
-        {isThresholdReached ? (
-          <View style={styles.thresholdWarningCard}>
-            <View style={styles.thresholdWarningHeader}>
-              <Ionicons name="warning" size={20} color="#D97706" />
-              <Text style={styles.thresholdWarningTitle}>
-                Threshold Rule Active ({formatPaiseToINR(thresholdLimitPaise)})
-              </Text>
-            </View>
-            <Text style={styles.thresholdWarningDesc}>
-              Your total wallet balance points ({formatPaiseToINR(totalBalancePaise)}) have reached or exceeded your assigned limit of {formatPaiseToINR(thresholdLimitPaise)}. In accordance with platform policy, bonus points beyond this limit cannot be cashed out as real money. You can withdraw up to your deposited principal of {formatPaiseToINR(eligibleWithdrawablePaise)}.
+        {/* Cycle Notice */}
+        {hasActiveBonus ? (
+          <View style={styles.thresholdNoticeCard}>
+            <Ionicons name="sparkles" size={16} color="#D97706" />
+            <Text style={styles.thresholdNoticeText}>
+              Active promotional bonus: {formatPaiseToINR(activeBonusPaise)}. When cashing out your full balance, this bonus is deducted once from your cash payout.
             </Text>
           </View>
         ) : (
           <View style={styles.thresholdNoticeCard}>
             <Ionicons name="shield-checkmark-outline" size={16} color={colors.primary} />
             <Text style={styles.thresholdNoticeText}>
-              Threshold Limit: {formatPaiseToINR(thresholdLimitPaise)}. Full available points are eligible for payout.
+              Full Payout: 100% of your requested points are eligible for cash payout.
             </Text>
           </View>
         )}
@@ -344,8 +288,8 @@ export const WithdrawScreen = () => {
           {payoutMethod === 'upi' ? (
             <View style={styles.payoutInputsContainer}>
               <CustomInput
-                label="UPI ID / VPA"
-                placeholder="e.g. aditya@okaxis"
+                label="UPI ID / VPA (Optional)"
+                placeholder="e.g. aditya@okaxis (Optional)"
                 value={upiId}
                 onChangeText={(text) => setUpiId(text)}
                 leftIcon="card-outline"

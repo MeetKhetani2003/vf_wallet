@@ -7,6 +7,14 @@ import {
   updateEmployeePermissions,
   updateUserBonusConfig,
   toggleBlockUser,
+  updateEmployeeLocation,
+  getEmployeeLocations,
+  resetApplicationData,
+  deleteSingleTransaction,
+  getBackupSnapshotsList,
+  restoreBackupSnapshotController,
+  undoRestoreBackupSnapshotController,
+  deleteBackupPermanentlyController,
 } from '../controllers/adminController';
 import {
   getAllTransactions,
@@ -98,5 +106,31 @@ router.post(
 // Master Transaction Ledger
 // GET /api/admin/transactions
 router.get('/transactions', getAllTransactions);
+
+// Employee Location Tracking Routes
+// POST /api/admin/employee/location (Active employee sends GPS coordinates)
+router.post('/employee/location', updateEmployeeLocation);
+
+// GET /api/admin/employees/locations (Super Admin views all active employees' live coordinates)
+router.get('/employees/locations', getEmployeeLocations);
+
+// Backup, App Reset, Soft-Delete & Restore Routes
+// POST /api/admin/backup/reset-app (Super Admin one-click zero state reset)
+router.post('/backup/reset-app', requireSuperAdmin, resetApplicationData);
+
+// POST /api/admin/backup/delete-transaction/:id (Super Admin soft-delete single transaction)
+router.post('/backup/delete-transaction/:id', requireSuperAdmin, deleteSingleTransaction);
+
+// GET /api/admin/backup/snapshots (List all archived snapshots and deleted items)
+router.get('/backup/snapshots', getBackupSnapshotsList);
+
+// POST /api/admin/backup/restore/:snapshotId (Restore an archived snapshot/transaction)
+router.post('/backup/restore/:snapshotId', restoreBackupSnapshotController);
+
+// POST /api/admin/backup/undo-restore/:snapshotId (Undo restore within 5 minutes)
+router.post('/backup/undo-restore/:snapshotId', undoRestoreBackupSnapshotController);
+
+// DELETE /api/admin/backup/permanent/:snapshotId (Super Admin permanent hard delete from DB & images)
+router.delete('/backup/permanent/:snapshotId', requireSuperAdmin, deleteBackupPermanentlyController);
 
 export default router;

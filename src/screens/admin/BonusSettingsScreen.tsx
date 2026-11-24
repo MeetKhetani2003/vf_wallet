@@ -3,15 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  Switch,
   TextInput,
   TouchableOpacity,
+  Switch,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { ScreenContainer } from '../../components/common/ScreenContainer';
 import { Header } from '../../components/common/Header';
@@ -20,8 +19,6 @@ import { SecondaryButton } from '../../components/buttons/SecondaryButton';
 import { adminApi } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
-import { formatPaiseToINR, rupeesToPaise } from '../../utils/currency';
-import { calculateDepositPreview } from '../../utils/calculations';
 
 export const BonusSettingsScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
@@ -29,15 +26,10 @@ export const BonusSettingsScreen = () => {
   const { updateBonusConfig } = useWallet();
 
   const canEditBonus = isSuperAdmin || permissions.canSetBonus;
-  const canEditThreshold = isSuperAdmin || permissions.canSetThreshold;
 
   // Bonus State
   const [isBonusActive, setIsBonusActive] = useState(true);
   const [percentageStr, setPercentageStr] = useState('10');
-
-  // Threshold State
-  const [isThresholdActive, setIsThresholdActive] = useState(true);
-  const [thresholdLimitStr, setThresholdLimitStr] = useState('15000');
 
   // Metadata
   const [todayDate, setTodayDate] = useState('');
@@ -46,12 +38,12 @@ export const BonusSettingsScreen = () => {
   const [initialLoading, setInitialLoading] = useState(true);
 
   // Simulator State
-  const [simMode, setSimMode] = useState<'WITHDRAWAL' | 'DEPOSIT'>('WITHDRAWAL');
+  const [simMode, setSimMode] = useState<'CYCLE' | 'DEPOSIT'>('CYCLE');
   const [simDepositAmount, setSimDepositAmount] = useState('20000');
-  const [depositSimAmount, setDepositSimAmount] = useState('20000');
-  const [withdrawalSimAmount, setWithdrawalSimAmount] = useState('15000');
+  const [withdrawalSimPoints, setWithdrawalSimPoints] = useState('42000');
+  const [isSecondWithdrawal, setIsSecondWithdrawal] = useState(false);
 
-  // Fetch running daily rates and threshold from backend
+  // Fetch running daily rates from backend
   useEffect(() => {
     let isMounted = true;
     (async () => {
@@ -64,21 +56,13 @@ export const BonusSettingsScreen = () => {
           if (res.isActive !== undefined) {
             setIsBonusActive(Boolean(res.isActive));
           }
-          if (res.thresholdLimitRupees !== undefined) {
-            setThresholdLimitStr(String(res.thresholdLimitRupees));
-          } else if (res.thresholdLimitPaise !== undefined) {
-            setThresholdLimitStr(String(Math.round(res.thresholdLimitPaise / 100)));
-          }
-          if (res.isThresholdActive !== undefined) {
-            setIsThresholdActive(Boolean(res.isThresholdActive));
-          }
           if (res.date) {
             setTodayDate(res.date);
           }
           setIsSetForToday(Boolean(res.isSetForToday));
         }
       } catch (err) {
-        console.warn('Could not load daily bonus and threshold config:', err);
+        console.warn('Could not load daily bonus config:', err);
       } finally {
         if (isMounted) setInitialLoading(false);
       }
@@ -89,95 +73,71 @@ export const BonusSettingsScreen = () => {
   }, []);
 
   const percentage = parseFloat(percentageStr) || 0;
-  const effectivePercentage = isBonusActive ? percentage : 0;
-  const thresholdLimit = parseFloat(thresholdLimitStr) || 0;
 
-  // Deposit Preview Calculations
-  const depositSimPaise = rupeesToPaise(depositSimAmount || '0');
-  const depositPreview = calculateDepositPreview(depositSimPaise, effectivePercentage);
-
-  // Dynamic Withdrawal Simulation Calculations:
-  // Bonus excluded is NOT a fixed amount; it is dynamically calculated from the
-  // exact bonus percentage allocated on the client's deposit!
+  // Simulator Calculations
   const simDepositRupees = parseFloat(simDepositAmount || '0');
-  const simAllocatedBonusRupees =
-    isBonusActive && percentage > 0
-      ? Math.round((simDepositRupees * percentage) / 100)
-      : 0;
-  const sampleBalanceRupees = simDepositRupees + simAllocatedBonusRupees;
-
-  const simWithdrawalRupees = parseFloat(withdrawalSimAmount || '0');
-  const isSimThresholdApplied =
-    isThresholdActive &&
-    thresholdLimit > 0 &&
-    simWithdrawalRupees >= thresholdLimit &&
-    simAllocatedBonusRupees > 0;
-
-  const simBonusExcluded = isSimThresholdApplied
-    ? Math.min(simAllocatedBonusRupees, simWithdrawalRupees)
+  const simBonusPoints = isBonusActive && percentage > 0
+    ? Math.round((simDepositRupees * percentage) / 100)
     : 0;
-  const simNetCashPayout = Math.max(0, simWithdrawalRupees - simBonusExcluded);
+  // Scenario: Deposit 1 (simDepositRupees) + Deposit 2 (simDepositRupees)
+  // Deposit 1 = simDepositRupees + simBonusPoints
+  // Deposit 2 replaces previous bonus, adding simDepositRupees + simBonusPoints - simBonusPoints = simDepositRupees
+  // Total sample balance = simDepositRupees * 2 + simBonusPoints
+  const sampleConsecutiveBalance = simDepositRupees * 2 + simBonusPoints;
+
+  const simWithdrawalPointsVal = parseFloat(withdrawalSimPoints || '0');
+  // If withdrawal is equal to or greater than balance, bonus is deducted from last deposit
+  const isQualifyingCashout =
+    !isSecondWithdrawal &&
+    simBonusPoints > 0 &&
+    simWithdrawalPointsVal >= sampleConsecutiveBalance;
+
+  const simBonusDeducted = isQualifyingCashout ? simBonusPoints : 0;
+  const simNetCashPayout = Math.max(0, simWithdrawalPointsVal - simBonusDeducted);
 
   const handleSave = async () => {
-    if (!canEditBonus && !canEditThreshold) {
-      Alert.alert('Permission Denied', 'You do not have permission to modify daily rates or threshold rules.');
+    if (!canEditBonus) {
+      Alert.alert('Permission Denied', 'You do not have permission to modify daily bonus rates.');
       return;
     }
 
-    if (canEditBonus && (isNaN(percentage) || percentage < 0 || percentage > 100)) {
+    if (isNaN(percentage) || percentage < 0 || percentage > 100) {
       Alert.alert('Invalid Percentage', 'Bonus percentage must be a number between 0% and 100%.');
-      return;
-    }
-
-    if (canEditThreshold && (isNaN(thresholdLimit) || thresholdLimit < 0)) {
-      Alert.alert('Invalid Threshold', 'Threshold limit must be a positive number in rupees.');
       return;
     }
 
     setLoading(true);
     try {
-      const payload: any = {};
-      if (canEditBonus) {
-        payload.percentage = percentage;
-        payload.isActive = isBonusActive;
-      }
-      if (canEditThreshold) {
-        payload.thresholdLimit = thresholdLimit;
-        payload.isThresholdActive = isThresholdActive;
-      }
-
-      const res = await adminApi.setDailyBonus(payload);
+      const res = await adminApi.setDailyBonus({
+        percentage,
+        isActive: isBonusActive,
+      });
       if (res.success) {
         setIsSetForToday(true);
-        if (canEditBonus) {
-          await updateBonusConfig(percentage, isBonusActive);
-        }
+        await updateBonusConfig(percentage, isBonusActive);
         Alert.alert(
-          'Daily Rules Updated! ✅',
-          `Running rules for ${todayDate || 'Today'}:\n• Bonus Rate: ${
+          'Daily Bonus Rate Updated! ✅',
+          `Running bonus for ${todayDate || 'Today'}:\n• Bonus Rate: ${
             isBonusActive ? `${percentage}% Active` : 'Disabled (0%)'
-          }\n• Threshold Limit: ${
-            isThresholdActive ? `₹${thresholdLimit.toLocaleString('en-IN')}` : 'Disabled'
-          }\nThese rules automatically apply to all deposits and withdrawals processed today.`
+          }\nThis rate automatically applies to client deposits processed today.`
         );
       } else {
-        Alert.alert('Error', res.error || 'Failed to update daily rules.');
+        Alert.alert('Error', res.error || 'Failed to update daily bonus.');
       }
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Network error while updating rules.');
+      Alert.alert('Error', err.message || 'Network error while updating bonus.');
     } finally {
       setLoading(false);
     }
   };
 
   const quickPercentages = [0, 5, 10, 15, 20];
-  const quickThresholds = [10000, 15000, 20000, 25000, 50000];
 
   return (
     <ScreenContainer scrollable backgroundColor={colors.background}>
       <Header
-        title="Daily Rates & Threshold"
-        subtitle={`Day-based rules & permissions ${todayDate ? `(${todayDate})` : ''}`}
+        title="Daily Bonus Rate"
+        subtitle={`Day-based promotional rates ${todayDate ? `(${todayDate})` : ''}`}
       />
 
       <View style={styles.content}>
@@ -187,22 +147,18 @@ export const BonusSettingsScreen = () => {
             <Ionicons
               name={isSuperAdmin ? 'shield-checkmark' : 'lock-closed'}
               size={18}
-              color={isSuperAdmin ? colors.primary : '#7C3AED'}
+              color={isSuperAdmin ? colors.primary : '#D97706'}
             />
             <View style={{ flex: 1 }}>
               <Text style={styles.permBadgeTitle}>
                 {isSuperAdmin
-                  ? 'Super Admin Full Rule Control'
-                  : 'Assigned Staff Rule Access'}
+                  ? 'Super Admin Rule Control'
+                  : 'Assigned Staff Bonus Access'}
               </Text>
               <Text style={styles.permBadgeDesc}>
                 {isSuperAdmin
-                  ? 'You have complete authority to set running rates and grant threshold/bonus permissions to staff.'
-                  : `Your active permissions: ${
-                      [canEditBonus && 'Bonus Rate', canEditThreshold && 'Threshold Limit']
-                        .filter(Boolean)
-                        .join(' & ') || 'View Only'
-                    }`}
+                  ? 'You have complete authority to set running daily bonus rates and grant permissions to staff.'
+                  : `Your active permissions: ${canEditBonus ? 'Daily Bonus Rates' : 'View Only'}`}
               </Text>
             </View>
           </View>
@@ -281,98 +237,25 @@ export const BonusSettingsScreen = () => {
           </View>
         </View>
 
-        {/* 2. Daily Running Threshold Start Limit Card */}
-        <View style={[styles.card, !canEditThreshold && styles.lockedCard]}>
-          <View style={styles.switchRow}>
-            <View style={styles.switchTextCol}>
-              <View style={styles.titleWithIcon}>
-                <Ionicons name="shield-half" size={18} color="#7C3AED" />
-                <Text style={styles.cardHeading}>Daily Threshold Start Limit (₹)</Text>
-              </View>
-              <Text style={styles.switchSubtitle}>
-                Withdrawals at or above this threshold limit retain promotional bonus in the client's wallet.
-              </Text>
-            </View>
-            <Switch
-              value={isThresholdActive}
-              onValueChange={setIsThresholdActive}
-              disabled={!canEditThreshold}
-              trackColor={{ false: '#DFE1E6', true: '#C4B5FD' }}
-              thumbColor={isThresholdActive ? '#7C3AED' : '#FFFFFF'}
-            />
-          </View>
-
-          {!canEditThreshold && (
-            <View style={styles.lockedPill}>
-              <Ionicons name="lock-closed" size={13} color="#92400E" />
-              <Text style={styles.lockedPillText}>
-                Requires Super Admin or "Daily Threshold & Rules" permission
-              </Text>
-            </View>
-          )}
-
-          <View style={[styles.rateInputRow, (!isThresholdActive || !canEditThreshold) && styles.disabledInputRow]}>
-            <Text style={[styles.percentSymbol, { color: '#7C3AED' }]}>₹</Text>
-            <TextInput
-              style={styles.rateInput}
-              keyboardType="numeric"
-              value={thresholdLimitStr}
-              editable={isThresholdActive && canEditThreshold}
-              onChangeText={(text) => {
-                const cleaned = text.replace(/[^0-9]/g, '');
-                setThresholdLimitStr(cleaned);
-              }}
-            />
-          </View>
-
-          {/* Quick Threshold Chips */}
-          <View style={styles.chipsRow}>
-            {quickThresholds.map((t) => {
-              const isSelected = thresholdLimit === t;
-              return (
-                <TouchableOpacity
-                  key={t}
-                  style={[
-                    styles.chip,
-                    isSelected && { backgroundColor: '#EDE9FE', borderColor: '#7C3AED' },
-                    (!isThresholdActive || !canEditThreshold) && styles.disabledChip,
-                  ]}
-                  disabled={!isThresholdActive || !canEditThreshold}
-                  onPress={() => setThresholdLimitStr(t.toString())}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      isSelected && { color: '#6D28D9', fontWeight: '700' },
-                    ]}
-                  >
-                    ₹{(t / 1000).toFixed(0)}k
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* 3. Real-Time Interactive Simulator */}
+        {/* 2. Interactive Points & Bonus Cycle Simulator */}
         <View style={styles.card}>
           <View style={styles.simTabRow}>
             <TouchableOpacity
-              style={[styles.simTab, simMode === 'WITHDRAWAL' && styles.simTabActive]}
-              onPress={() => setSimMode('WITHDRAWAL')}
+              style={[styles.simTab, simMode === 'CYCLE' && styles.simTabActive]}
+              onPress={() => setSimMode('CYCLE')}
             >
               <Ionicons
-                name="arrow-up-circle-outline"
+                name="repeat-outline"
                 size={16}
-                color={simMode === 'WITHDRAWAL' ? colors.primary : colors.textSecondary}
+                color={simMode === 'CYCLE' ? colors.primary : colors.textSecondary}
               />
               <Text
                 style={[
                   styles.simTabText,
-                  simMode === 'WITHDRAWAL' && styles.simTabTextActive,
+                  simMode === 'CYCLE' && styles.simTabTextActive,
                 ]}
               >
-                Withdrawal Rule Simulator
+                Points & Cycle Simulation
               </Text>
             </TouchableOpacity>
 
@@ -396,10 +279,17 @@ export const BonusSettingsScreen = () => {
             </TouchableOpacity>
           </View>
 
-          {simMode === 'WITHDRAWAL' ? (
+          {simMode === 'CYCLE' ? (
             <View style={{ marginTop: 14 }}>
-              {/* Sample Deposit Input to test any deposit amount & bonus % */}
-              <Text style={styles.simLabel}>Sample Client Deposit Amount (₹):</Text>
+              <Text style={styles.cycleTitle}>Cycle Simulation (Consecutive Deposits + Payout)</Text>
+              <Text style={styles.cycleSub}>
+                1. Cash deposit gives Points + {percentage}% Bonus.
+                {'\n'}2. Consecutive deposit replaces the previous unwithdrawn bonus.
+                {'\n'}3. On full cashout, active bonus is cut once. Subsequent withdrawals in cycle get 100% full cash.
+              </Text>
+
+              {/* Sample Deposit Input */}
+              <Text style={styles.simLabel}>Per-Deposit Amount (₹):</Text>
               <View style={styles.simInputBox}>
                 <Text style={styles.simCurrency}>₹</Text>
                 <TextInput
@@ -413,39 +303,17 @@ export const BonusSettingsScreen = () => {
                 />
               </View>
 
-              <View style={[styles.chipsRow, { marginBottom: 12 }]}>
-                {[10000, 20000, 30000, 50000].map((amt) => (
-                  <TouchableOpacity
-                    key={amt}
-                    style={[
-                      styles.chip,
-                      simDepositRupees === amt && styles.chipSelected,
-                    ]}
-                    onPress={() => setSimDepositAmount(String(amt))}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        simDepositRupees === amt && styles.chipTextSelected,
-                      ]}
-                    >
-                      ₹{(amt / 1000).toFixed(0)}k
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               <View style={styles.simContextBox}>
                 <View style={styles.simContextRow}>
-                  <Text style={styles.simContextLabel}>Deposit Principal:</Text>
-                  <Text style={styles.simContextVal}>₹{simDepositRupees.toLocaleString('en-IN')}</Text>
+                  <Text style={styles.simContextLabel}>1st Deposit (₹{simDepositRupees.toLocaleString('en-IN')}):</Text>
+                  <Text style={styles.simContextVal}>
+                    {(simDepositRupees + simBonusPoints).toLocaleString('en-IN')} Points (Bonus: +{simBonusPoints.toLocaleString('en-IN')})
+                  </Text>
                 </View>
                 <View style={styles.simContextRow}>
-                  <Text style={styles.simContextLabel}>
-                    Allocated Bonus ({isBonusActive ? `${percentage}%` : '0%'}):
-                  </Text>
-                  <Text style={[styles.simContextVal, { color: '#D97706', fontWeight: '800' }]}>
-                    +₹{simAllocatedBonusRupees.toLocaleString('en-IN')}
+                  <Text style={styles.simContextLabel}>2nd Deposit (₹{simDepositRupees.toLocaleString('en-IN')}):</Text>
+                  <Text style={styles.simContextVal}>
+                    +{(simDepositRupees).toLocaleString('en-IN')} Points (Prev Bonus Replaced)
                   </Text>
                 </View>
                 <View style={[styles.previewDivider, { marginVertical: 4 }]} />
@@ -454,126 +322,86 @@ export const BonusSettingsScreen = () => {
                     Total Wallet Balance:
                   </Text>
                   <Text style={[styles.simContextVal, { fontWeight: '800', color: colors.primary }]}>
-                    ₹{sampleBalanceRupees.toLocaleString('en-IN')}
+                    {sampleConsecutiveBalance.toLocaleString('en-IN')} Points
+                  </Text>
+                </View>
+                <View style={styles.simContextRow}>
+                  <Text style={styles.simContextLabel}>Active Cycle Bonus:</Text>
+                  <Text style={[styles.simContextVal, { color: '#D97706', fontWeight: '800' }]}>
+                    {simBonusPoints.toLocaleString('en-IN')} Points
                   </Text>
                 </View>
               </View>
 
-              <Text style={[styles.simLabel, { marginTop: 6 }]}>Test Withdrawal Amount (₹):</Text>
+              {/* Test Withdrawal Points Input */}
+              <Text style={[styles.simLabel, { marginTop: 6 }]}>Test Points to Withdraw:</Text>
               <View style={styles.simInputBox}>
-                <Text style={styles.simCurrency}>₹</Text>
+                <Ionicons name="wallet-outline" size={16} color={colors.primary} style={{ marginRight: 6 }} />
                 <TextInput
                   style={styles.simInput}
                   keyboardType="numeric"
-                  value={withdrawalSimAmount}
+                  value={withdrawalSimPoints}
                   onChangeText={(text) => {
                     const cleaned = text.replace(/[^0-9]/g, '');
-                    setWithdrawalSimAmount(cleaned);
+                    setWithdrawalSimPoints(cleaned);
                   }}
                 />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textSecondary }}>Points</Text>
               </View>
 
-              {/* Quick Withdrawal Test Chips */}
-              <View style={[styles.chipsRow, { marginBottom: 12 }]}>
-                {[10000, 15000, 20000, 22000].map((amt) => (
-                  <TouchableOpacity
-                    key={amt}
-                    style={[
-                      styles.chip,
-                      simWithdrawalRupees === amt && styles.chipSelected,
-                    ]}
-                    onPress={() => setWithdrawalSimAmount(String(amt))}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        simWithdrawalRupees === amt && styles.chipTextSelected,
-                      ]}
-                    >
-                      ₹{(amt / 1000).toFixed(0)}k
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              {/* Toggle 2nd withdrawal in cycle */}
+              <TouchableOpacity
+                style={styles.cycleToggleRow}
+                onPress={() => setIsSecondWithdrawal(!isSecondWithdrawal)}
+              >
+                <Ionicons
+                  name={isSecondWithdrawal ? 'checkbox' : 'square-outline'}
+                  size={18}
+                  color={isSecondWithdrawal ? colors.primary : colors.textMuted}
+                />
+                <Text style={styles.cycleToggleText}>
+                  Simulate subsequent withdrawal in same cycle (bonus already cut)
+                </Text>
+              </TouchableOpacity>
 
-              {/* Simulation Result */}
+              {/* Payout Breakdown Box */}
               <View
                 style={[
                   styles.previewBox,
-                  isSimThresholdApplied
-                    ? { backgroundColor: '#FDF4FF', borderColor: '#F0ABFC' }
+                  isQualifyingCashout
+                    ? { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }
                     : { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
                 ]}
               >
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>Threshold Rule</Text>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      isSimThresholdApplied
-                        ? { backgroundColor: '#FAE8FF' }
-                        : { backgroundColor: '#DCFCE7' },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusPillText,
-                        isSimThresholdApplied
-                          ? { color: '#86198F' }
-                          : { color: '#166534' },
-                      ]}
-                    >
-                      {isSimThresholdApplied
-                        ? `Threshold Triggered (≥ ₹${thresholdLimit.toLocaleString('en-IN')})`
-                        : `No Threshold Applied (< ₹${thresholdLimit.toLocaleString('en-IN')})`}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>Requested Withdrawal</Text>
+                  <Text style={styles.previewLabel}>Debited Points</Text>
                   <Text style={styles.previewVal}>
-                    ₹{simWithdrawalRupees.toLocaleString('en-IN')}
+                    {simWithdrawalPointsVal.toLocaleString('en-IN')} Points
                   </Text>
                 </View>
 
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>
-                    Allocated Bonus ({percentage}%) Retained in Wallet
-                  </Text>
+                  <Text style={styles.previewLabel}>Bonus Deduction</Text>
                   <Text
                     style={[
                       styles.previewVal,
-                      isSimThresholdApplied
-                        ? { color: '#86198F', fontWeight: '800' }
-                        : { color: '#166534' },
+                      isQualifyingCashout ? { color: '#DC2626', fontWeight: '700' } : { color: '#166534' },
                     ]}
                   >
-                    {isSimThresholdApplied
-                      ? `-₹${simBonusExcluded.toLocaleString('en-IN')} (${percentage}% Bonus Excluded)`
-                      : '₹0 (Full Amount Withdrawable)'}
+                    {isQualifyingCashout
+                      ? `-${simBonusDeducted.toLocaleString('en-IN')} Points (${percentage}% Cycle Bonus Cut)`
+                      : '0 Points (100% Full Cashout)'}
                   </Text>
                 </View>
 
                 <View style={styles.previewDivider} />
 
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewTotalLabel}>Instant Cash Payout</Text>
-                  <Text
-                    style={[
-                      styles.previewTotalVal,
-                      { color: isSimThresholdApplied ? '#7C3AED' : '#15803D' },
-                    ]}
-                  >
+                  <Text style={styles.previewTotalLabel}>Cash Payout to Client</Text>
+                  <Text style={[styles.previewTotalVal, { color: '#15803D' }]}>
                     ₹{simNetCashPayout.toLocaleString('en-IN')}
                   </Text>
                 </View>
-
-                {isSimThresholdApplied && (
-                  <Text style={[styles.simContextSub, { marginTop: 6, fontStyle: 'italic' }]}>
-                    * Notice: The excluded bonus is not a fixed ₹2,000. It dynamically equals the {percentage}% bonus allocated to the deposit (₹{simDepositRupees.toLocaleString('en-IN')} × {percentage}% = ₹{simAllocatedBonusRupees.toLocaleString('en-IN')}).
-                  </Text>
-                )}
               </View>
             </View>
           ) : (
@@ -584,37 +412,37 @@ export const BonusSettingsScreen = () => {
                 <TextInput
                   style={styles.simInput}
                   keyboardType="numeric"
-                  value={depositSimAmount}
+                  value={simDepositAmount}
                   onChangeText={(text) => {
                     const cleaned = text.replace(/[^0-9]/g, '');
-                    setDepositSimAmount(cleaned);
+                    setSimDepositAmount(cleaned);
                   }}
                 />
               </View>
 
               <View style={styles.previewBox}>
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>Principal Deposit</Text>
+                  <Text style={styles.previewLabel}>Principal Cash Deposit</Text>
                   <Text style={styles.previewVal}>
-                    {formatPaiseToINR(depositPreview.depositPaise)}
+                    ₹{simDepositRupees.toLocaleString('en-IN')}
                   </Text>
                 </View>
 
                 <View style={styles.previewRow}>
                   <Text style={styles.previewLabel}>
-                    Bonus Credited ({isBonusActive ? `${depositPreview.bonusPercentage}%` : 'Disabled'})
+                    Bonus Credited ({isBonusActive ? `${percentage}%` : 'Disabled'})
                   </Text>
                   <Text style={[styles.previewVal, styles.bonusVal]}>
-                    +{formatPaiseToINR(depositPreview.bonusPaise)}
+                    +{simBonusPoints.toLocaleString('en-IN')} Points
                   </Text>
                 </View>
 
                 <View style={styles.previewDivider} />
 
                 <View style={styles.previewRow}>
-                  <Text style={styles.previewTotalLabel}>Total Wallet Credit</Text>
+                  <Text style={styles.previewTotalLabel}>Total Points Credited</Text>
                   <Text style={styles.previewTotalVal}>
-                    {formatPaiseToINR(depositPreview.totalCreditPaise)}
+                    {(simDepositRupees + simBonusPoints).toLocaleString('en-IN')} Points
                   </Text>
                 </View>
               </View>
@@ -622,7 +450,7 @@ export const BonusSettingsScreen = () => {
           )}
         </View>
 
-        {/* 4. Super Admin Permission Delegation Card */}
+        {/* 3. Super Admin Staff Delegation */}
         {isSuperAdmin && (
           <View style={styles.card}>
             <View style={styles.titleWithIcon}>
@@ -630,9 +458,8 @@ export const BonusSettingsScreen = () => {
               <Text style={styles.cardHeading}>Staff Permission Delegation</Text>
             </View>
             <Text style={styles.switchSubtitle}>
-              You can grant either or both permissions to employees:
-              {'\n'}• <Text style={{ fontWeight: '700' }}>Daily Threshold & Rules:</Text> Lets employee adjust running withdrawal thresholds.
-              {'\n'}• <Text style={{ fontWeight: '700' }}>Daily Bonus Rates:</Text> Lets employee configure running daily bonus percentages.
+              You can grant employees permission to set daily running bonus rates:
+              {'\n'}• <Text style={{ fontWeight: '700' }}>Daily Bonus Rates:</Text> Lets employee adjust running promotional percentage.
             </Text>
             <SecondaryButton
               title="Manage Employee Permissions 🛡️"
@@ -643,9 +470,9 @@ export const BonusSettingsScreen = () => {
         )}
 
         {/* Save Button */}
-        {(canEditBonus || canEditThreshold) && (
+        {canEditBonus && (
           <PrimaryButton
-            title={loading ? 'Saving Daily Rules...' : 'Save Daily Rates & Threshold'}
+            title={loading ? 'Saving Daily Rate...' : 'Save Daily Bonus Rate'}
             onPress={handleSave}
             loading={loading}
             fullWidth
@@ -837,6 +664,18 @@ const styles = StyleSheet.create({
     color: colors.primaryDark,
     fontWeight: '700',
   },
+  cycleTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  cycleSub: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    lineHeight: 16,
+    marginBottom: 10,
+  },
   simContextBox: {
     backgroundColor: '#F8FAFC',
     borderRadius: 10,
@@ -860,16 +699,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.text,
     fontWeight: '700',
-  },
-  simContextTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  simContextSub: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    marginTop: 2,
   },
   simLabel: {
     fontSize: 12,
@@ -901,6 +730,17 @@ const styles = StyleSheet.create({
     color: colors.text,
     padding: 0,
   },
+  cycleToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 8,
+  },
+  cycleToggleText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    flex: 1,
+  },
   previewBox: {
     backgroundColor: '#FFFBEB',
     borderRadius: 12,
@@ -926,15 +766,6 @@ const styles = StyleSheet.create({
   },
   bonusVal: {
     color: colors.warningDark,
-    fontWeight: '700',
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  statusPillText: {
-    fontSize: 11,
     fontWeight: '700',
   },
   previewDivider: {

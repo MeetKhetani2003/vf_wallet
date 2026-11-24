@@ -121,12 +121,17 @@ export const ClientOcrDepositScreen = () => {
           createdAt: u.createdAt,
           upiId: u.upiId || undefined,
           bankAccount: u.bankAccount || undefined,
-          bonusPercentage: u.bonusPercentage ?? 10.0,
-          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1500000,
+          bonusPercentage: u.bonusPercentage ?? undefined,
           totalBalancePaise: u.totalBalancePaise || 0,
+          activeBonusPaise: u.activeBonusPaise || 0,
+          lastDepositAmountPaise: u.lastDepositAmountPaise || 0,
+          cycleWithdrawnPaise: u.cycleWithdrawnPaise || 0,
+          isBonusDeductedInCycle: Boolean(u.isBonusDeductedInCycle),
           totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
           withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
-          isThresholdReached: Boolean(u.isThresholdReached),
+          createdById: u.createdById,
+          createdByName: u.createdByName,
+          createdByRole: u.createdByRole,
         }));
         setClients(mapped);
 
@@ -301,7 +306,14 @@ export const ClientOcrDepositScreen = () => {
   // Day-based running bonus set by Superadmin applies automatically to deposits (0% if none set)
   const numericAmount = parseFloat(amountText.replace(/,/g, '')) || 0;
   const amountPaise = numericAmount > 0 ? rupeesToPaise(numericAmount) : 0;
-  const effectiveBonusPct = isDailyBonusActive ? dailyBonusRate : 0.0;
+  const hasClientCustomBonus = Boolean(
+    selectedClient?.bonusPercentage && selectedClient.bonusPercentage > 0
+  );
+  const effectiveBonusPct = hasClientCustomBonus
+    ? selectedClient!.bonusPercentage!
+    : isDailyBonusActive
+    ? dailyBonusRate
+    : 0.0;
   const bonusPaise = Math.round((amountPaise * effectiveBonusPct) / 100);
   const totalCreditPaise = amountPaise + bonusPaise;
 
@@ -321,7 +333,7 @@ export const ClientOcrDepositScreen = () => {
         name: quickClientName.trim(),
         phone: quickClientPhone.trim(),
         userType: 'CLIENT',
-        bonusPercentage: effectiveBonusPct,
+        // Client specific bonus will NOT auto assign; daily running bonus applies dynamically
       });
 
       if (res.success && res.user) {
@@ -334,12 +346,17 @@ export const ClientOcrDepositScreen = () => {
           accountType: 'CLIENT',
           status: 'active',
           createdAt: res.user.createdAt,
-          bonusPercentage: effectiveBonusPct,
-          bonusThresholdLimitPaise: res.user.bonusThresholdLimitPaise || 1500000,
+          bonusPercentage: undefined,
           totalBalancePaise: 0,
+          activeBonusPaise: 0,
+          lastDepositAmountPaise: 0,
+          cycleWithdrawnPaise: 0,
+          isBonusDeductedInCycle: false,
           totalDepositPrincipalPaise: 0,
           withdrawablePaise: 0,
-          isThresholdReached: false,
+          createdById: res.user.createdById,
+          createdByName: res.user.createdByName,
+          createdByRole: res.user.createdByRole,
         };
 
         setClients((prev) => [newClient, ...prev]);
@@ -433,16 +450,28 @@ export const ClientOcrDepositScreen = () => {
 
       if (res.success) {
         await Promise.all([refreshData(), loadClients()]);
+        const targetClientId = selectedClient.id;
+        const newBalanceRupees = (
+          (res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise) / 100
+        ).toLocaleString('en-IN');
+
         Alert.alert(
           'Deposit Credited Instantly! ✅',
-          `${formatPaiseToINR(totalCreditPaise)} (Principal ${formatPaiseToINR(
+          `${formatPaiseToINR(totalCreditPaise)} Points (${formatPaiseToINR(
             amountPaise
-          )} + ${effectiveBonusPct}% Daily Bonus ${formatPaiseToINR(
+          )} Cash + ${effectiveBonusPct}% Bonus: ${formatPaiseToINR(
             bonusPaise
-          )}) has been auto-credited to ${selectedClient.name}.\n\nNew Balance: ${formatPaiseToINR(
-            res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise
-          )}`,
-          [{ text: 'Done', onPress: resetForm }]
+          )} Points) auto-credited to ${selectedClient.name}.\n\nTotal Points Balance: ${newBalanceRupees} Points`,
+          [
+            { text: 'Done', onPress: resetForm },
+            {
+              text: 'View in Withdraw Screen 💸',
+              onPress: () => {
+                resetForm();
+                navigation.navigate('ClientWithdraw', { clientId: targetClientId });
+              },
+            },
+          ]
         );
       } else if (res.status === 409) {
         Alert.alert(

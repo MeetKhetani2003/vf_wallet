@@ -62,10 +62,17 @@ export function calculateUserWallet(
   let pendingDepositCount = 0;
   let pendingWithdrawalCount = 0;
 
+  let totalCashDepositedPaise = 0;
+  let totalPointsDepositedPaise = 0;
+  let totalPointsWithdrawnPaise = 0;
+  let totalCashWithdrawnPaise = 0;
+  let totalBonusDeductedPaise = 0;
+
   for (const txn of userTxns) {
     if (txn.type === 'deposit') {
       if (txn.status === 'approved') {
         totalDepositPaise += txn.amountPaise;
+        totalCashDepositedPaise += txn.amountPaise;
 
         // Use the snapshot bonusPaise recorded when the deposit was approved or created
         const bonus =
@@ -73,18 +80,27 @@ export function calculateUserWallet(
             ? txn.bonusPaise
             : calculateDepositBonus(txn.amountPaise, txn.bonusPercentage || 0);
         totalBonusPaise += bonus;
+        totalPointsDepositedPaise += txn.amountPaise + bonus;
       } else if (txn.status === 'pending') {
         pendingDepositCount += 1;
       }
     } else if (txn.type === 'withdrawal') {
       if (txn.status === 'approved') {
         totalWithdrawalPaise += txn.amountPaise;
+        totalPointsWithdrawnPaise += txn.amountPaise;
+        const bonusDeducted = txn.bonusPaise || txn.bonusDeductedPaise || 0;
+        totalBonusDeductedPaise += bonusDeducted;
+        totalCashWithdrawnPaise +=
+          txn.cashPaidPaise !== undefined && txn.cashPaidPaise > 0
+            ? txn.cashPaidPaise
+            : Math.max(0, txn.amountPaise - bonusDeducted);
       } else if (txn.status === 'pending') {
         pendingWithdrawalCount += 1;
       }
     } else if (txn.type === 'bonus' && txn.status === 'approved') {
       // Standalone bonus transaction if any
       totalBonusPaise += txn.amountPaise;
+      totalPointsDepositedPaise += txn.amountPaise;
     }
   }
 
@@ -100,11 +116,17 @@ export function calculateUserWallet(
     availableBalancePaise,
     pendingDepositCount,
     pendingWithdrawalCount,
+    totalCashDepositedPaise,
+    totalPointsDepositedPaise,
+    totalPointsWithdrawnPaise,
+    totalCashWithdrawnPaise,
+    totalBonusDeductedPaise,
   };
 }
 
 /**
- * Validates a withdrawal request against user's current available balance.
+ * Validates a withdrawal request amount.
+ * Under Points & Cycle rules, withdrawals are not restricted by wallet balance.
  */
 export function validateWithdrawal(
   availableBalancePaise: number,
@@ -114,15 +136,6 @@ export function validateWithdrawal(
     return {
       isValid: false,
       error: 'Please enter a valid withdrawal amount greater than ₹0.',
-    };
-  }
-
-  if (requestedAmountPaise > availableBalancePaise) {
-    return {
-      isValid: false,
-      error: `Withdrawal amount exceeds your available balance of ${formatPaiseToINR(
-        availableBalancePaise
-      )}.`,
     };
   }
 
@@ -166,19 +179,35 @@ export function calculateAdminStats(
   let pendingDepositRequestsCount = 0;
   let pendingWithdrawalRequestsCount = 0;
 
+  let totalCashDepositedPaise = 0;
+  let totalPointsDepositedPaise = 0;
+  let totalPointsWithdrawnPaise = 0;
+  let totalCashWithdrawnPaise = 0;
+  let totalBonusDeductedPaise = 0;
+
   for (const txn of transactions) {
     if (txn.status === 'approved') {
       if (txn.type === 'deposit') {
         totalApprovedDepositsPaise += txn.amountPaise;
+        totalCashDepositedPaise += txn.amountPaise;
         const bonus =
           txn.bonusPaise !== undefined
             ? txn.bonusPaise
             : calculateDepositBonus(txn.amountPaise, txn.bonusPercentage || 0);
         totalBonusGivenPaise += bonus;
+        totalPointsDepositedPaise += txn.amountPaise + bonus;
       } else if (txn.type === 'withdrawal') {
         totalApprovedWithdrawalsPaise += txn.amountPaise;
+        totalPointsWithdrawnPaise += txn.amountPaise;
+        const bonusCut = txn.bonusPaise || txn.bonusDeductedPaise || 0;
+        totalBonusDeductedPaise += bonusCut;
+        totalCashWithdrawnPaise +=
+          txn.cashPaidPaise !== undefined && txn.cashPaidPaise > 0
+            ? txn.cashPaidPaise
+            : Math.max(0, txn.amountPaise - bonusCut);
       } else if (txn.type === 'bonus') {
         totalBonusGivenPaise += txn.amountPaise;
+        totalPointsDepositedPaise += txn.amountPaise;
       }
     } else if (txn.status === 'pending') {
       if (txn.type === 'deposit') {
@@ -198,6 +227,12 @@ export function calculateAdminStats(
 
   return {
     totalUsers: users.length,
+    totalCashDepositedPaise,
+    totalPointsDepositedPaise,
+    totalPointsWithdrawnPaise,
+    totalCashWithdrawnPaise,
+    totalClientsPointsBalancePaise: totalWalletLiabilityPaise,
+    totalBonusDeductedPaise,
     totalApprovedDepositsPaise,
     totalApprovedWithdrawalsPaise,
     totalBonusGivenPaise,

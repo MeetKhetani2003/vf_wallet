@@ -9,9 +9,12 @@ import {
   FlatList,
   TextInput,
   Platform,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { ScreenContainer } from '../../components/common/ScreenContainer';
@@ -21,8 +24,9 @@ import { PrimaryButton } from '../../components/buttons/PrimaryButton';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
 import { adminApi } from '../../services/api';
+import { ocrService } from '../../services/ocrService';
 import { formatPaiseToINR, rupeesToPaise } from '../../utils/currency';
-import { User } from '../../types';
+import { User, ExtractedPaymentDetails } from '../../types';
 
 type RouteParams = {
   ClientWithdraw?: {
@@ -51,9 +55,103 @@ export const ClientWithdrawScreen = () => {
   const [ifsc, setIfsc] = useState('');
   const [accountHolderName, setAccountHolderName] = useState('');
   const [notes, setNotes] = useState('');
+  const [screenshotUri, setScreenshotUri] = useState<string | null>(null);
+  const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
+  const [isScanningScreenshot, setIsScanningScreenshot] = useState(false);
+  const [scannedPayoutPaise, setScannedPayoutPaise] = useState<number | null>(null);
+  const [scannedDetails, setScannedDetails] = useState<ExtractedPaymentDetails | null>(null);
+  const [ocrScanError, setOcrScanError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const loadClients = useCallback(async () => {
+  const scanAndVerifyScreenshot = async (uri: string, base64Data: string | null) => {
+    setIsScanningScreenshot(true);
+    setOcrScanError(null);
+    try {
+      const res = await ocrService.processScreenshot(uri, base64Data);
+      if (res.extracted) {
+        setScannedDetails(res.extracted);
+        if (res.extracted.amountPaise !== null) {
+          setScannedPayoutPaise(res.extracted.amountPaise);
+        } else {
+          setScannedPayoutPaise(null);
+          setOcrScanError('Could not detect transfer amount from screenshot.');
+        }
+      } else {
+        setOcrScanError('Could not read screenshot details.');
+      }
+    } catch (e: any) {
+      console.warn('Screenshot OCR verification error:', e);
+      setOcrScanError('OCR failed to scan screenshot.');
+    } finally {
+      setIsScanningScreenshot(false);
+    }
+  };
+
+  const handlePickScreenshot = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Permission Required',
+          'Allow photo library access to upload withdrawal payout receipts.'
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.65,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const b64 = asset.base64
+          ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
+          : asset.uri;
+        setScreenshotUri(asset.uri);
+        setScreenshotBase64(b64);
+        scanAndVerifyScreenshot(asset.uri, b64);
+      }
+    } catch {
+      Alert.alert('Error', 'Unable to pick screenshot from gallery.');
+    }
+  };
+
+  const handleCaptureScreenshot = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Permission Required',
+          'Allow camera access to capture withdrawal payout receipts.'
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.65,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const b64 = asset.base64
+          ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
+          : asset.uri;
+        setScreenshotUri(asset.uri);
+        setScreenshotBase64(b64);
+        scanAndVerifyScreenshot(asset.uri, b64);
+      }
+    } catch {
+      Alert.alert('Error', 'Unable to open camera.');
+    }
+  };
+
+  const loadClients = useCallback(async (targetClientId?: string) => {
     try {
       const res = await adminApi.getUsers({ role: 'CLIENT' });
       if (res.success && Array.isArray(res.users)) {
@@ -68,32 +166,46 @@ export const ClientWithdrawScreen = () => {
           createdAt: u.createdAt,
           upiId: u.upiId || undefined,
           bankAccount: u.bankAccount || undefined,
-          bonusPercentage: u.bonusPercentage ?? 10.0,
-          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+          bonusPercentage: u.bonusPercentage && u.bonusPercentage > 0 ? u.bonusPercentage : 0,
           totalBalancePaise: u.totalBalancePaise || 0,
+          activeBonusPaise: u.activeBonusPaise || 0,
+          lastDepositAmountPaise: u.lastDepositAmountPaise || 0,
+          cycleWithdrawnPaise: u.cycleWithdrawnPaise || 0,
+          isBonusDeductedInCycle: Boolean(u.isBonusDeductedInCycle),
           totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
-          allocatedBonusPaise: u.allocatedBonusPaise || 0,
           withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
-          isThresholdReached: Boolean(u.isThresholdReached),
+          createdById: u.createdById,
+          createdByName: u.createdByName,
+          createdByRole: u.createdByRole,
         }));
         setClients(mapped);
 
-        const targetId = route.params?.clientId || selectedClient?.id;
-        if (targetId) {
-          const found = mapped.find((c) => c.id === targetId);
-          if (found) {
-            setSelectedClient(found);
+        setSelectedClient((prev) => {
+          const idToFind = targetClientId || route.params?.clientId || prev?.id;
+          if (idToFind) {
+            const found = mapped.find((c) => c.id === idToFind);
+            if (found) return found;
           }
-        }
+          return prev;
+        });
       }
     } catch (e) {
       console.warn('Could not load clients for withdrawal:', e);
     }
-  }, [route.params?.clientId, selectedClient?.id]);
+  }, [route.params?.clientId]);
+
+  // Synchronize fresh client balances every time the screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      loadClients(route.params?.clientId);
+    }, [loadClients, route.params?.clientId])
+  );
 
   useEffect(() => {
-    loadClients();
-  }, [loadClients]);
+    if (route.params?.clientId) {
+      loadClients(route.params.clientId);
+    }
+  }, [route.params?.clientId, loadClients]);
 
   // Pre-fill client's saved UPI / Bank when client changes
   const handleSelectClient = (client: User) => {
@@ -129,38 +241,39 @@ export const ClientWithdrawScreen = () => {
     return c.name.toLowerCase().includes(q) || c.phone.includes(q);
   });
 
-  // Rule-Based Threshold Start Limit & Withdrawable Metrics
+  // Points & Cycle Metrics
   const totalBalancePaise = selectedClient?.totalBalancePaise || 0;
-  const principalPaise = selectedClient?.totalDepositPrincipalPaise || 0;
-  const thresholdStartLimitPaise =
-    selectedClient?.bonusThresholdLimitPaise ?? 1500000; // Default ₹15,000
-  const clientBonusPct = selectedClient?.bonusPercentage ?? 10.0;
-
-  // Active allocated deposit bonus attached to client's account
-  // (dynamically based on the deposit bonus percentage allocated to this client):
-  const activeBonusPaise =
-    selectedClient?.allocatedBonusPaise !== undefined && selectedClient.allocatedBonusPaise > 0
-      ? selectedClient.allocatedBonusPaise
-      : selectedClient && principalPaise > 0 && totalBalancePaise > principalPaise
-      ? totalBalancePaise - principalPaise
-      : Math.round(
-          (totalBalancePaise * clientBonusPct) / (100 + clientBonusPct)
-        );
+  const activeBonusPaise = selectedClient?.activeBonusPaise || 0;
+  const isBonusDeductedInCycle = Boolean(selectedClient?.isBonusDeductedInCycle);
+  const hasActiveBonus = activeBonusPaise > 0 && !isBonusDeductedInCycle;
 
   const numericAmount = parseFloat(amountText.replace(/,/g, '')) || 0;
   const requestedPaise = numericAmount > 0 ? rupeesToPaise(numericAmount) : 0;
 
-  // Threshold rule:
-  // If requested withdrawal >= threshold start limit:
-  //   bonus cannot be withdrawn, so net payout = requested - bonus
-  // If requested withdrawal < threshold start limit:
-  //   no threshold applies, so net payout = requested
-  const isThresholdApplied =
-    requestedPaise >= thresholdStartLimitPaise && activeBonusPaise > 0;
-  const bonusExcludedPaise = isThresholdApplied
-    ? Math.min(activeBonusPaise, requestedPaise)
-    : 0;
+  // Cycle deduction rule:
+  const previousCycleWithdrawn = selectedClient?.cycleWithdrawnPaise || 0;
+  const newCycleWithdrawn = previousCycleWithdrawn + requestedPaise;
+  const lastDepositPaise = selectedClient?.lastDepositAmountPaise || 0;
+
+  // Points & Cycle Deduction Rules:
+  // Withdrawal is NOT restricted by wallet balance.
+  // 1. If any withdrawal was already done without deposit again in this cycle -> give all demanded points
+  // 2. If not, and withdrawal is equal to or greater than balance -> deduct bonus points from last deposit
+  const isBonusDeductionTriggered =
+    !isBonusDeductedInCycle &&
+    activeBonusPaise > 0 &&
+    requestedPaise >= totalBalancePaise;
+
+  const bonusExcludedPaise = isBonusDeductionTriggered ? activeBonusPaise : 0;
   const netPayoutPaise = Math.max(0, requestedPaise - bonusExcludedPaise);
+  const expectedPayoutPaise = netPayoutPaise > 0 ? netPayoutPaise : requestedPaise;
+
+  // Verification: Scanned receipt amount must match the withdrawal payout amount
+  const isAmountMatched =
+    scannedPayoutPaise !== null &&
+    expectedPayoutPaise > 0 &&
+    (Math.abs(scannedPayoutPaise - expectedPayoutPaise) <= 100 ||
+      Math.abs(scannedPayoutPaise - requestedPaise) <= 100);
 
   const handleProcessWithdrawal = async () => {
     if (!selectedClient) {
@@ -169,25 +282,7 @@ export const ClientWithdrawScreen = () => {
     }
 
     if (requestedPaise <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid withdrawal amount.');
-      return;
-    }
-
-    if (requestedPaise > totalBalancePaise) {
-      Alert.alert(
-        'Insufficient Balance',
-        `Client balance is ${formatPaiseToINR(
-          totalBalancePaise
-        )}. Requested withdrawal exceeds total available balance.`
-      );
-      return;
-    }
-
-    if (payoutMethod === 'upi' && !upiId.trim()) {
-      Alert.alert(
-        'UPI ID Required',
-        'Please enter the client UPI ID or switch to Direct Payout.'
-      );
+      Alert.alert('Invalid Amount', 'Please enter a valid points withdrawal amount.');
       return;
     }
 
@@ -199,17 +294,43 @@ export const ClientWithdrawScreen = () => {
       return;
     }
 
+    if (!screenshotUri) {
+      Alert.alert(
+        'Screenshot Required',
+        'Please upload a payout receipt screenshot before processing withdrawal.'
+      );
+      return;
+    }
+
+    if (isScanningScreenshot) {
+      Alert.alert(
+        'Scanning Receipt...',
+        'Please wait while the uploaded receipt amount is being scanned and verified.'
+      );
+      return;
+    }
+
+    if (!isAmountMatched) {
+      Alert.alert(
+        'Amount Mismatch ❌',
+        scannedPayoutPaise !== null
+          ? `Withdrawal payout requires ₹${(expectedPayoutPaise / 100).toLocaleString('en-IN')}, but uploaded screenshot shows ₹${(scannedPayoutPaise / 100).toLocaleString('en-IN')}.\n\nThe receipt amount must match the withdrawal amount before proceeding.`
+          : `Could not verify amount from screenshot. Uploaded receipt must clearly show ₹${(expectedPayoutPaise / 100).toLocaleString('en-IN')}. Please re-upload a clear receipt screenshot.`
+      );
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const res = await adminApi.createClientWithdrawal(selectedClient.id, {
         amountPaise: requestedPaise,
         paymentMethod:
           payoutMethod === 'upi'
-            ? `UPI: ${upiId.trim()}`
+            ? (upiId.trim() ? `UPI: ${upiId.trim()}` : 'UPI Payout')
             : payoutMethod === 'bank'
             ? `Bank: ${bankName.trim() || 'IMPS'}`
             : 'Direct Cash / Settlement',
-        upiId: payoutMethod === 'upi' ? upiId.trim() : undefined,
+        upiId: payoutMethod === 'upi' && upiId.trim() ? upiId.trim() : undefined,
         bankDetails:
           payoutMethod === 'bank'
             ? {
@@ -221,6 +342,7 @@ export const ClientWithdrawScreen = () => {
               }
             : undefined,
         notes: notes.trim() || undefined,
+        screenshotUri: screenshotBase64 || screenshotUri || undefined,
       });
 
       if (res.success) {
@@ -228,17 +350,20 @@ export const ClientWithdrawScreen = () => {
         Alert.alert(
           'Payout Processed! ✅',
           res.message ||
-            `Requested ${formatPaiseToINR(
-              requestedPaise
-            )}. Paid out ${formatPaiseToINR(netPayoutPaise)} to ${
-              selectedClient.name
-            }.\n\nRemaining Balance: ${formatPaiseToINR(
-              res.clientNewBalancePaise ??
-                Math.max(0, totalBalancePaise - requestedPaise)
-            )}`
+            `Debited ${(requestedPaise / 100).toLocaleString('en-IN')} Points. Paid ₹${(
+              netPayoutPaise / 100
+            ).toLocaleString('en-IN')} Cash to ${selectedClient.name}.\n\nRemaining Points: ${(
+              (res.clientNewBalancePaise ?? Math.max(0, totalBalancePaise - requestedPaise)) /
+              100
+            ).toLocaleString('en-IN')}`
         );
         setAmountText('');
         setNotes('');
+        setScreenshotUri(null);
+        setScreenshotBase64(null);
+        setScannedPayoutPaise(null);
+        setScannedDetails(null);
+        setOcrScanError(null);
       } else {
         Alert.alert(
           'Withdrawal Blocked',
@@ -274,7 +399,7 @@ export const ClientWithdrawScreen = () => {
     <ScreenContainer scrollable backgroundColor={colors.background}>
       <Header
         title="Client Withdrawal"
-        subtitle="Rule-based instant payout (Auto-Accept)"
+        subtitle="Points Cycle Payout (Auto-Accept)"
       />
 
       <View style={styles.content}>
@@ -297,7 +422,10 @@ export const ClientWithdrawScreen = () => {
                   <Text style={styles.selectedClientName}>{selectedClient.name}</Text>
                   <Text style={styles.selectedClientMeta}>+91 {selectedClient.phone}</Text>
                   <Text style={styles.selectedClientBal}>
-                    Balance: {formatPaiseToINR(totalBalancePaise)} • Threshold: {formatPaiseToINR(thresholdStartLimitPaise)}
+                    Points: {(totalBalancePaise / 100).toLocaleString('en-IN')} • Active Bonus: {(activeBonusPaise / 100).toLocaleString('en-IN')}
+                  </Text>
+                  <Text style={styles.cycleStatusText}>
+                    Cycle Status: {isBonusDeductedInCycle ? '100% Cashout (Bonus Already Deducted)' : hasActiveBonus ? 'Active Bonus Cycle' : 'No Active Bonus'}
                   </Text>
                 </View>
                 <View style={styles.changePill}>
@@ -314,23 +442,27 @@ export const ClientWithdrawScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Step 2: Real-Time Threshold Rule & Payout Calculation */}
+        {/* Step 2: Real-Time Cycle Rule & Payout Calculation */}
         {selectedClient && (
           <View style={styles.card}>
-            <Text style={styles.stepTitle}>2. Threshold Rule & Payout Calculation</Text>
+            <Text style={styles.stepTitle}>2. Points & Cycle Calculation</Text>
 
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Total Wallet Balance</Text>
-              <Text style={styles.metricVal}>{formatPaiseToINR(totalBalancePaise)}</Text>
+              <Text style={styles.metricLabel}>Total Wallet Points</Text>
+              <Text style={styles.metricVal}>
+                {(totalBalancePaise / 100).toLocaleString('en-IN')} Points
+              </Text>
             </View>
             <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Threshold Start Limit</Text>
-              <Text style={styles.metricVal}>{formatPaiseToINR(thresholdStartLimitPaise)}</Text>
-            </View>
-            <View style={styles.metricRow}>
-              <Text style={styles.metricLabel}>Active Bonus in Wallet</Text>
+              <Text style={styles.metricLabel}>Active Cycle Bonus</Text>
               <Text style={[styles.metricVal, { color: '#B45309' }]}>
-                {formatPaiseToINR(activeBonusPaise)}
+                {(activeBonusPaise / 100).toLocaleString('en-IN')} Points
+              </Text>
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>Bonus Status in Cycle</Text>
+              <Text style={[styles.metricVal, { color: isBonusDeductedInCycle ? '#15803D' : '#D97706' }]}>
+                {isBonusDeductedInCycle ? 'Deducted (Full Cash Eligible)' : hasActiveBonus ? 'Active (Deductible on Cashout)' : 'None'}
               </Text>
             </View>
 
@@ -338,65 +470,63 @@ export const ClientWithdrawScreen = () => {
               <View
                 style={[
                   styles.ruleStatusBox,
-                  isThresholdApplied ? styles.ruleBoxTriggered : styles.ruleBoxNormal,
+                  isBonusDeductionTriggered ? styles.ruleBoxTriggered : styles.ruleBoxNormal,
                 ]}
               >
                 <View style={styles.ruleStatusHeader}>
                   <Ionicons
-                    name={isThresholdApplied ? 'shield' : 'checkmark-circle'}
+                    name={isBonusDeductionTriggered ? 'alert-circle' : 'checkmark-circle'}
                     size={18}
-                    color={isThresholdApplied ? '#B45309' : '#15803D'}
+                    color={isBonusDeductionTriggered ? '#B45309' : '#15803D'}
                   />
                   <Text
                     style={[
                       styles.ruleStatusTitle,
-                      isThresholdApplied
+                      isBonusDeductionTriggered
                         ? styles.ruleTitleTriggered
                         : styles.ruleTitleNormal,
                     ]}
                   >
-                    {isThresholdApplied
-                      ? `Threshold Start Limit Applied (>= ${formatPaiseToINR(
-                          thresholdStartLimitPaise
-                        )})`
-                      : `Below Threshold Limit (< ${formatPaiseToINR(
-                          thresholdStartLimitPaise
-                        )})`}
+                    {isBonusDeductionTriggered
+                      ? 'Equal/Above Balance: Active Bonus Deducted'
+                      : isBonusDeductedInCycle
+                      ? 'Subsequent Withdrawal: 100% Cash Payout'
+                      : 'Partial Cashout: 100% Cash Payout'}
                   </Text>
                 </View>
 
                 <Text style={styles.ruleStatusDesc}>
-                  {isThresholdApplied
-                    ? `Because withdrawal reaches/exceeds ${formatPaiseToINR(
-                        thresholdStartLimitPaise
-                      )}, the ${formatPaiseToINR(
-                        bonusExcludedPaise
-                      )} bonus is excluded and cannot be cashed out.`
-                    : `No threshold applied. Full amount of ${formatPaiseToINR(
-                        requestedPaise
-                      )} is eligible for cash withdrawal.`}
+                  {isBonusDeductionTriggered
+                    ? `Withdrawal (${(requestedPaise / 100).toLocaleString('en-IN')} Points) is equal to or greater than wallet balance (${(totalBalancePaise / 100).toLocaleString('en-IN')} Points). The ${(
+                        bonusExcludedPaise / 100
+                      ).toLocaleString('en-IN')} Points bonus from last deposit is deducted.`
+                    : isBonusDeductedInCycle
+                    ? 'A withdrawal was already processed in this cycle without a new deposit. All demanded points are paid in cash with 0 bonus cut.'
+                    : `Withdrawal (${(requestedPaise / 100).toLocaleString('en-IN')} Points) is below current balance (${(totalBalancePaise / 100).toLocaleString('en-IN')} Points). 100% cash is paid, active bonus remains in wallet.`}
                 </Text>
 
                 <View style={styles.calcDivider} />
 
                 <View style={styles.calcRow}>
-                  <Text style={styles.calcLabel}>Requested Debit Amount:</Text>
-                  <Text style={styles.calcVal}>{formatPaiseToINR(requestedPaise)}</Text>
+                  <Text style={styles.calcLabel}>Requested Debit Points:</Text>
+                  <Text style={styles.calcVal}>
+                    {(requestedPaise / 100).toLocaleString('en-IN')} Points
+                  </Text>
                 </View>
-                {isThresholdApplied && (
+                {isBonusDeductionTriggered && (
                   <View style={styles.calcRow}>
                     <Text style={[styles.calcLabel, { color: '#B45309' }]}>
-                      Bonus Excluded (Cannot Withdraw):
+                      Active Cycle Bonus Deducted:
                     </Text>
-                    <Text style={[styles.calcVal, { color: '#B45309' }]}>
-                      -{formatPaiseToINR(bonusExcludedPaise)}
+                    <Text style={[styles.calcVal, { color: '#B45309', fontWeight: '700' }]}>
+                      -{(bonusExcludedPaise / 100).toLocaleString('en-IN')} Points
                     </Text>
                   </View>
                 )}
                 <View style={[styles.calcRow, styles.calcRowTotal]}>
                   <Text style={styles.calcTotalLabel}>Net Cash Payout to Client:</Text>
                   <Text style={styles.calcTotalVal}>
-                    {formatPaiseToINR(netPayoutPaise)}
+                    ₹{(netPayoutPaise / 100).toLocaleString('en-IN')}
                   </Text>
                 </View>
               </View>
@@ -414,17 +544,17 @@ export const ClientWithdrawScreen = () => {
                 onPress={() => setAmountText((totalBalancePaise / 100).toString())}
               >
                 <Text style={styles.maxChipText}>
-                  Max: {formatPaiseToINR(totalBalancePaise)}
+                  All Points: {(totalBalancePaise / 100).toLocaleString('en-IN')}
                 </Text>
               </TouchableOpacity>
             )}
           </View>
 
           <CustomInput
-            label="Withdrawal Amount (₹)"
-            placeholder="e.g. 1000"
+            label="Points to Withdraw"
+            placeholder="e.g. 20000"
             keyboardType="decimal-pad"
-            leftIcon="cash-outline"
+            leftIcon="wallet-outline"
             value={amountText}
             onChangeText={setAmountText}
           />
@@ -436,7 +566,7 @@ export const ClientWithdrawScreen = () => {
               [
                 { key: 'upi', label: 'UPI', icon: 'flash-outline' },
                 { key: 'bank', label: 'Bank', icon: 'business-outline' },
-                { key: 'direct', label: 'Cash/Direct', icon: 'wallet-outline' },
+                { key: 'direct', label: 'Cash/Direct', icon: 'cash-outline' },
               ] as const
             ).map((m) => (
               <TouchableOpacity
@@ -463,8 +593,8 @@ export const ClientWithdrawScreen = () => {
 
           {payoutMethod === 'upi' && (
             <CustomInput
-              label="Client UPI ID"
-              placeholder="e.g. client@okaxis"
+              label="Client UPI ID (Optional)"
+              placeholder="e.g. client@okaxis (Optional)"
               leftIcon="qr-code-outline"
               autoCapitalize="none"
               value={upiId}
@@ -515,12 +645,108 @@ export const ClientWithdrawScreen = () => {
             onChangeText={setNotes}
           />
 
+          {/* Payout Screenshot / Receipt Upload */}
+          <Text style={styles.subLabel}>Payout Screenshot / Receipt (Proof)</Text>
+          {screenshotUri ? (
+            <View style={styles.screenshotPreviewContainer}>
+              <Image source={{ uri: screenshotUri }} style={styles.screenshotPreviewImage} />
+
+              {/* OCR Amount Verification Box */}
+              <View style={styles.ocrMatchStatusBox}>
+                {isScanningScreenshot ? (
+                  <View style={styles.ocrScanningRow}>
+                    <ActivityIndicator size="small" color={colors.primary} />
+                    <Text style={styles.ocrScanningText}>
+                      Scanning receipt & matching payout amount...
+                    </Text>
+                  </View>
+                ) : isAmountMatched ? (
+                  <View style={styles.ocrMatchSuccessRow}>
+                    <Ionicons name="checkmark-circle" size={22} color="#16A34A" />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={styles.ocrMatchSuccessTitle}>
+                        Amount Matched & Verified! ✅
+                      </Text>
+                      <Text style={styles.ocrMatchSuccessSub}>
+                        Receipt amount {formatPaiseToINR(scannedPayoutPaise!)} matches withdrawal payout of {formatPaiseToINR(expectedPayoutPaise)}.
+                      </Text>
+                      {scannedDetails?.utrNumber && (
+                        <Text style={styles.ocrMatchUtrText}>
+                          Ref / UTR: {scannedDetails.utrNumber}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ) : scannedPayoutPaise !== null ? (
+                  <View style={styles.ocrMatchMismatchRow}>
+                    <Ionicons name="close-circle" size={22} color="#DC2626" />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={styles.ocrMatchMismatchTitle}>
+                        Amount Mismatch ❌
+                      </Text>
+                      <Text style={styles.ocrMatchMismatchSub}>
+                        Payout requires {formatPaiseToINR(expectedPayoutPaise)}, but screenshot shows {formatPaiseToINR(scannedPayoutPaise)}. Amounts must match before proceeding.
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.ocrMatchWarningRow}>
+                    <Ionicons name="alert-circle" size={22} color="#D97706" />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={styles.ocrMatchWarningTitle}>
+                        Amount Not Detected
+                      </Text>
+                      <Text style={styles.ocrMatchWarningSub}>
+                        {ocrScanError || 'Could not detect payment amount on this receipt.'} Please ensure the uploaded screenshot clearly shows {formatPaiseToINR(expectedPayoutPaise)}.
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              <TouchableOpacity
+                style={styles.removeScreenshotBtn}
+                onPress={() => {
+                  setScreenshotUri(null);
+                  setScreenshotBase64(null);
+                  setScannedPayoutPaise(null);
+                  setScannedDetails(null);
+                  setOcrScanError(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="trash-outline" size={16} color={colors.white} />
+                <Text style={styles.removeScreenshotBtnText}>Remove Screenshot</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.screenshotActionsRow}>
+              <TouchableOpacity
+                style={styles.screenshotActionBtn}
+                onPress={handlePickScreenshot}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="images-outline" size={18} color={colors.primary} />
+                <Text style={styles.screenshotActionText}>Gallery Receipt</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.screenshotActionBtn}
+                onPress={handleCaptureScreenshot}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="camera-outline" size={18} color={colors.primary} />
+                <Text style={styles.screenshotActionText}>Capture Photo</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           <PrimaryButton
             title={
               isSubmitting
                 ? 'Processing Payout...'
                 : requestedPaise > 0
-                ? `Pay Out ${formatPaiseToINR(netPayoutPaise)} Net Cash`
+                ? `Pay Out ₹${(netPayoutPaise / 100).toLocaleString('en-IN')} Cash`
                 : 'Process Instant Payout'
             }
             onPress={handleProcessWithdrawal}
@@ -597,10 +823,10 @@ export const ClientWithdrawScreen = () => {
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={styles.optionBalance}>
-                      {formatPaiseToINR(item.totalBalancePaise || 0)}
+                      {((item.totalBalancePaise || 0) / 100).toLocaleString('en-IN')} Points
                     </Text>
                     <Text style={styles.optionBalLabel}>
-                      Cash: {formatPaiseToINR(item.withdrawablePaise ?? item.totalBalancePaise ?? 0)}
+                      Bonus: {((item.activeBonusPaise || 0) / 100).toLocaleString('en-IN')} Pts
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -673,6 +899,12 @@ const styles = StyleSheet.create({
     color: '#15803D',
     marginTop: 2,
   },
+  cycleStatusText: {
+    fontSize: 11,
+    color: '#B45309',
+    fontWeight: '600',
+    marginTop: 2,
+  },
   changePill: {
     backgroundColor: colors.lightBlue,
     paddingHorizontal: 10,
@@ -711,41 +943,125 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  highlightMetricRow: {
-    borderBottomWidth: 0,
-    marginTop: 4,
-    paddingVertical: 10,
-    backgroundColor: '#F0FDF4',
-    paddingHorizontal: 10,
-    borderRadius: 10,
-  },
-  highlightLabel: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#166534',
-  },
-  highlightVal: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#15803D',
-  },
-  thresholdWarningBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#FEF3C7',
-    padding: 12,
+  ruleStatusBox: {
     borderRadius: 12,
-    marginTop: 10,
-    gap: 8,
+    padding: 12,
+    marginTop: 12,
     borderWidth: 1,
+  },
+  ruleBoxTriggered: {
+    backgroundColor: '#FFFBEB',
     borderColor: '#FDE68A',
   },
-  thresholdWarningText: {
+  ruleBoxNormal: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  ruleStatusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  ruleStatusTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  screenshotPreviewContainer: {
+    marginVertical: 10,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  screenshotPreviewImage: {
+    width: '100%',
+    height: 180,
+    resizeMode: 'cover',
+  },
+  removeScreenshotBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
+    paddingVertical: 8,
+    gap: 6,
+  },
+  removeScreenshotBtnText: {
+    color: colors.white,
     fontSize: 12,
-    color: '#92400E',
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  screenshotActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginVertical: 8,
+  },
+  screenshotActionBtn: {
     flex: 1,
-    lineHeight: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 6,
+  },
+  screenshotActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  ruleTitleTriggered: {
+    color: '#B45309',
+  },
+  ruleTitleNormal: {
+    color: '#15803D',
+  },
+  ruleStatusDesc: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  calcDivider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 8,
+  },
+  calcRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 2,
+  },
+  calcLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  calcVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  calcRowTotal: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  calcTotalLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  calcTotalVal: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#15803D',
   },
   amountHeaderRow: {
     flexDirection: 'row',
@@ -848,17 +1164,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-    borderRadius: 10,
+    borderRadius: 12,
+    marginVertical: 2,
   },
   clientOptionSelected: {
     backgroundColor: colors.lightBlue,
   },
   clientAvatarSmall: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: colors.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',
@@ -866,7 +1181,7 @@ const styles = StyleSheet.create({
   },
   clientAvatarSmallText: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
     color: colors.primary,
   },
   optionName: {
@@ -877,25 +1192,26 @@ const styles = StyleSheet.create({
   optionSub: {
     fontSize: 11,
     color: colors.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
   },
   optionBalance: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#15803D',
   },
   optionBalLabel: {
     fontSize: 10,
-    color: '#15803D',
-    fontWeight: '600',
+    color: colors.textSecondary,
+    marginTop: 1,
   },
   emptyListBox: {
-    padding: 28,
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
   },
   emptyListText: {
-    fontSize: 13,
-    color: colors.textMuted,
+    fontSize: 14,
+    color: colors.textSecondary,
   },
   noPermContainer: {
     flex: 1,
@@ -904,88 +1220,103 @@ const styles = StyleSheet.create({
     padding: 32,
   },
   noPermTitle: {
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: '800',
     color: colors.text,
     marginTop: 12,
+    marginBottom: 6,
   },
   noPermDesc: {
     fontSize: 13,
     color: colors.textSecondary,
     textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 19,
+    lineHeight: 18,
   },
-  ruleStatusBox: {
-    borderRadius: 14,
-    padding: 14,
-    marginTop: 12,
-    borderWidth: 1.5,
+  ocrMatchStatusBox: {
+    marginTop: 10,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
-  ruleBoxTriggered: {
-    backgroundColor: '#FFFBEB',
-    borderColor: '#FDE68A',
-  },
-  ruleBoxNormal: {
-    backgroundColor: '#F0FDF4',
-    borderColor: '#BBF7D0',
-  },
-  ruleStatusHeader: {
+  ocrScanningRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 6,
+    backgroundColor: '#EFF6FF',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
   },
-  ruleStatusTitle: {
+  ocrScanningText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1D4ED8',
+  },
+  ocrMatchSuccessRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  ocrMatchSuccessTitle: {
     fontSize: 13,
     fontWeight: '800',
+    color: '#166534',
   },
-  ruleTitleTriggered: {
-    color: '#B45309',
-  },
-  ruleTitleNormal: {
+  ocrMatchSuccessSub: {
+    fontSize: 11,
     color: '#15803D',
-  },
-  ruleStatusDesc: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    lineHeight: 17,
-  },
-  calcDivider: {
-    height: 1,
-    backgroundColor: colors.divider,
-    marginVertical: 10,
-  },
-  calcRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  calcLabel: {
-    fontSize: 12,
-    color: colors.textSecondary,
+    marginTop: 2,
     fontWeight: '600',
   },
-  calcVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.text,
+  ocrMatchUtrText: {
+    fontSize: 10,
+    color: '#166534',
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
-  calcRowTotal: {
-    marginTop: 6,
-    paddingTop: 6,
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
+  ocrMatchMismatchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FECACA',
   },
-  calcTotalLabel: {
+  ocrMatchMismatchTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: colors.text,
+    color: '#991B1B',
   },
-  calcTotalVal: {
-    fontSize: 15,
-    fontWeight: '900',
-    color: '#15803D',
+  ocrMatchMismatchSub: {
+    fontSize: 11,
+    color: '#B91C1C',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  ocrMatchWarningRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  ocrMatchWarningTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  ocrMatchWarningSub: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 16,
   },
 });
 

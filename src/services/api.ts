@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { STORAGE_KEYS } from '../utils/constants';
+import { EmployeePermissions } from '../types';
 
 // Local dev IP: Wi-Fi IP of the host development PC
 export const LOCAL_DEV_IP = '10.247.202.104';
@@ -249,14 +250,7 @@ export const adminApi = {
     password?: string;
     userType?: 'CLIENT' | 'EMPLOYEE';
     role?: 'CLIENT' | 'EMPLOYEE';
-    permissions?: {
-      canOcrUpload: boolean;
-      canDeposit: boolean;
-      canWithdraw: boolean;
-      canSetBonus: boolean;
-      canSetThreshold: boolean;
-      canManageClients: boolean;
-    };
+    permissions?: Partial<EmployeePermissions>;
     upiId?: string;
     bankAccount?: {
       accountNumber: string;
@@ -297,14 +291,7 @@ export const adminApi = {
 
   async updateEmployeePermissions(
     userId: string,
-    permissions: {
-      canOcrUpload: boolean;
-      canDeposit: boolean;
-      canWithdraw: boolean;
-      canSetBonus: boolean;
-      canSetThreshold: boolean;
-      canManageClients: boolean;
-    },
+    permissions: Partial<EmployeePermissions>,
     password?: string
   ) {
     return apiClient.patch(`/admin/users/${userId}/permissions`, {
@@ -349,6 +336,9 @@ export const adminApi = {
       upiId?: string;
       bankDetails?: any;
       notes?: string;
+      screenshotUri?: string;
+      imageUrl?: string;
+      imageHash?: string;
     }
   ) {
     return apiClient.post(`/admin/clients/${clientId}/withdraw`, data);
@@ -473,6 +463,44 @@ export const adminApi = {
     }
     return apiClient.post('/admin/daily-bonus', data);
   },
+
+  async updateEmployeeLocation(data: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    address?: string;
+  }) {
+    return apiClient.post('/admin/employee/location', data);
+  },
+
+  async getEmployeeLocations() {
+    return apiClient.get('/admin/employees/locations');
+  },
+
+  // Backup, Reset & Restore API endpoints
+  async resetApplicationData() {
+    return apiClient.post('/admin/backup/reset-app');
+  },
+
+  async deleteTransaction(transactionId: string) {
+    return apiClient.post(`/admin/backup/delete-transaction/${transactionId}`);
+  },
+
+  async getBackupSnapshots() {
+    return apiClient.get('/admin/backup/snapshots');
+  },
+
+  async restoreBackupSnapshot(snapshotId: string) {
+    return apiClient.post(`/admin/backup/restore/${snapshotId}`);
+  },
+
+  async undoRestoreBackupSnapshot(snapshotId: string) {
+    return apiClient.post(`/admin/backup/undo-restore/${snapshotId}`);
+  },
+
+  async deleteBackupPermanently(snapshotId: string) {
+    return apiClient.delete(`/admin/backup/permanent/${snapshotId}`);
+  },
 };
 
 /**
@@ -499,6 +527,9 @@ export const walletApi = {
     upiId?: string;
     bankDetails?: any;
     notes?: string;
+    screenshotUri?: string;
+    imageUrl?: string;
+    imageHash?: string;
   }) {
     return apiClient.post('/wallet/withdraw', data);
   },

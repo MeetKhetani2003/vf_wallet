@@ -32,8 +32,14 @@ const formatUserResponse = (user: any) => {
     permissions: resolveUserPermissions(user.role, user.permissions),
     isBlocked: user.isBlocked,
     bonusPercentage: user.bonusPercentage,
-    bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
     totalBalancePaise: user.totalBalancePaise,
+    activeBonusPaise: user.activeBonusPaise || 0,
+    lastDepositAmountPaise: user.lastDepositAmountPaise || 0,
+    cycleWithdrawnPaise: user.cycleWithdrawnPaise || 0,
+    isBonusDeductedInCycle: Boolean(user.isBonusDeductedInCycle),
+    lastLatitude: user.lastLatitude ?? null,
+    lastLongitude: user.lastLongitude ?? null,
+    lastLocationUpdatedAt: user.lastLocationUpdatedAt ?? null,
     upiId: user.upiId || null,
     bankAccount: user.bankAccountNumber
       ? {

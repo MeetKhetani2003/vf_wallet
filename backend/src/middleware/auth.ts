@@ -25,7 +25,7 @@ export interface AuthenticatedRequest extends Request {
     permissions: EmployeePermissions;
     totalBalancePaise: number;
     bonusPercentage: number;
-    bonusThresholdLimitPaise: number;
+    activeBonusPaise?: number;
   };
 }
 
@@ -68,7 +68,7 @@ export const authenticateToken = async (
         isBlocked: true,
         totalBalancePaise: true,
         bonusPercentage: true,
-        bonusThresholdLimitPaise: true,
+        activeBonusPaise: true,
       },
     });
 
@@ -96,8 +96,8 @@ export const authenticateToken = async (
       isSuperAdmin: isSuperAdminRole(dbUser.role),
       permissions: resolveUserPermissions(dbUser.role, dbUser.permissions),
       totalBalancePaise: dbUser.totalBalancePaise,
-      bonusPercentage: dbUser.bonusPercentage,
-      bonusThresholdLimitPaise: dbUser.bonusThresholdLimitPaise,
+      bonusPercentage: dbUser.bonusPercentage || 0,
+      activeBonusPaise: dbUser.activeBonusPaise,
     };
 
     return next();

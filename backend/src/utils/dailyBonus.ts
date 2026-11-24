@@ -12,16 +12,12 @@ export const getTodayDateString = (): string => {
 };
 
 /**
- * Retrieves the currently active daily running bonus rate and threshold settings.
- * - If set for today -> returns configured daily values
- * - Defaults: bonus = 0% (if inactive/unset), threshold = ₹15,000 (1,500,000 paise)
+ * Retrieves the currently active daily running bonus percentage.
+ * Defaults: bonus = 0% (if inactive/unset)
  */
 export const getRunningDailyBonusRate = async (): Promise<{
   percentage: number;
   isActive: boolean;
-  thresholdLimitPaise: number;
-  thresholdLimitRupees: number;
-  isThresholdActive: boolean;
   date: string;
   isSetForToday: boolean;
 }> => {
@@ -33,31 +29,18 @@ export const getRunningDailyBonusRate = async (): Promise<{
     });
 
     if (todayBonus) {
-      const thresholdPaise =
-        todayBonus.thresholdLimitPaise !== undefined && todayBonus.thresholdLimitPaise !== null
-          ? todayBonus.thresholdLimitPaise
-          : 1500000;
-      const isThreshActive =
-        todayBonus.isThresholdActive !== undefined && todayBonus.isThresholdActive !== null
-          ? todayBonus.isThresholdActive
-          : true;
-
       return {
         percentage: todayBonus.isActive ? todayBonus.percentage : 0.0,
         isActive: todayBonus.isActive,
-        thresholdLimitPaise: thresholdPaise,
-        thresholdLimitRupees: Math.round(thresholdPaise / 100),
-        isThresholdActive: isThreshActive,
         date: today,
         isSetForToday: true,
       };
     }
 
-    // Check system setting for global running bonus & threshold fallback
-    const [fallbackBonus, fallbackThreshold] = await Promise.all([
-      prisma.systemSetting.findUnique({ where: { key: 'running_daily_bonus_rate' } }),
-      prisma.systemSetting.findUnique({ where: { key: 'running_daily_threshold_paise' } }),
-    ]);
+    // Check system setting fallback
+    const fallbackBonus = await prisma.systemSetting.findUnique({
+      where: { key: 'running_daily_bonus_rate' },
+    });
 
     let fallbackPct = 0.0;
     let fallbackBonusActive = false;
@@ -69,49 +52,31 @@ export const getRunningDailyBonusRate = async (): Promise<{
       }
     }
 
-    let fallbackThreshPaise = 1500000;
-    let fallbackThreshActive = true;
-    if (fallbackThreshold && fallbackThreshold.value) {
-      const parsedThresh = parseInt(fallbackThreshold.value, 10);
-      if (!isNaN(parsedThresh) && parsedThresh >= 0) {
-        fallbackThreshPaise = parsedThresh;
-      }
-    }
-
     return {
       percentage: fallbackPct,
       isActive: fallbackBonusActive,
-      thresholdLimitPaise: fallbackThreshPaise,
-      thresholdLimitRupees: Math.round(fallbackThreshPaise / 100),
-      isThresholdActive: fallbackThreshActive,
       date: today,
       isSetForToday: false,
     };
   } catch (error) {
-    console.warn('Error reading daily bonus and threshold rate:', error);
+    console.warn('Error reading daily bonus rate:', error);
   }
 
-  // Default fallback
   return {
     percentage: 0.0,
     isActive: false,
-    thresholdLimitPaise: 1500000,
-    thresholdLimitRupees: 15000,
-    isThresholdActive: true,
     date: today,
     isSetForToday: false,
   };
 };
 
 /**
- * Sets or updates the running bonus rate and threshold start limit for the day.
- * (Super Admin or authorized employees with canSetBonus / canSetThreshold)
+ * Sets or updates the running bonus rate for the day.
+ * (Super Admin or authorized employees with canSetBonus)
  */
 export const setRunningDailySettings = async (params: {
   percentage?: number;
   isActive?: boolean;
-  thresholdLimitPaise?: number;
-  isThresholdActive?: boolean;
   adminId: string;
   adminName: string;
 }) => {
@@ -126,16 +91,6 @@ export const setRunningDailySettings = async (params: {
   const finalIsActive =
     params.isActive !== undefined ? Boolean(params.isActive) : current.isActive;
 
-  const finalThresholdPaise =
-    params.thresholdLimitPaise !== undefined
-      ? Math.max(0, Math.round(Number(params.thresholdLimitPaise) || 0))
-      : current.thresholdLimitPaise;
-
-  const finalIsThresholdActive =
-    params.isThresholdActive !== undefined
-      ? Boolean(params.isThresholdActive)
-      : current.isThresholdActive;
-
   const [dailyRecord] = await prisma.$transaction([
     prisma.dailyBonus.upsert({
       where: { date: today },
@@ -143,16 +98,12 @@ export const setRunningDailySettings = async (params: {
         date: today,
         percentage: finalPercentage,
         isActive: finalIsActive,
-        thresholdLimitPaise: finalThresholdPaise,
-        isThresholdActive: finalIsThresholdActive,
         createdById: params.adminId,
         createdByName: params.adminName,
       },
       update: {
         percentage: finalPercentage,
         isActive: finalIsActive,
-        thresholdLimitPaise: finalThresholdPaise,
-        isThresholdActive: finalIsThresholdActive,
         createdById: params.adminId,
         createdByName: params.adminName,
       },
@@ -167,23 +118,13 @@ export const setRunningDailySettings = async (params: {
         value: finalIsActive ? String(finalPercentage) : '0',
       },
     }),
-    prisma.systemSetting.upsert({
-      where: { key: 'running_daily_threshold_paise' },
-      create: {
-        key: 'running_daily_threshold_paise',
-        value: String(finalThresholdPaise),
-      },
-      update: {
-        value: String(finalThresholdPaise),
-      },
-    }),
   ]);
 
   return dailyRecord;
 };
 
 /**
- * Backward-compatibility wrapper for setRunningDailyBonusRate
+ * Convenience wrapper
  */
 export const setRunningDailyBonusRate = async (
   percentage: number,

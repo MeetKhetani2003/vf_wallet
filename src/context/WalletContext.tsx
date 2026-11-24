@@ -110,8 +110,16 @@ const mapBackendTxn = (t: any): Transaction => {
     type: (t.type?.toLowerCase() || 'deposit') as any,
     status: (t.status?.toLowerCase() || 'pending') as any,
     amountPaise: t.amountPaise,
-    bonusPercentage: t.user?.bonusPercentage ?? t.bonusPercentage ?? 10,
+    bonusPercentage: t.user?.bonusPercentage ?? t.bonusPercentage ?? 0,
     bonusPaise: t.bonusPaise || 0,
+    bonusDeductedPaise:
+      t.type?.toLowerCase() === 'withdrawal' ? t.bonusPaise || 0 : 0,
+    cashPaidPaise:
+      t.cashPaidPaise !== undefined && t.cashPaidPaise > 0
+        ? t.cashPaidPaise
+        : t.type?.toLowerCase() === 'withdrawal'
+        ? Math.max(0, t.amountPaise - (t.bonusPaise || 0))
+        : 0,
     totalCreditPaise: t.amountPaise + (t.bonusPaise || 0),
     utrNumber: t.utr || t.utrNumber,
     withdrawablePaise:
@@ -186,8 +194,12 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({
               pendingWithdrawalCount: summaryRes.wallet.pendingWithdrawalCount,
               withdrawablePaise: summaryRes.wallet.withdrawablePaise,
               withdrawableRupees: summaryRes.wallet.withdrawableRupees,
-              isThresholdReached: summaryRes.wallet.isThresholdReached,
-              bonusThresholdLimitPaise: summaryRes.wallet.bonusThresholdLimitPaise,
+              netCashIfFullCashoutPaise: summaryRes.wallet.netCashIfFullCashoutPaise,
+              netCashIfFullCashoutRupees: summaryRes.wallet.netCashIfFullCashoutRupees,
+              activeBonusPaise: summaryRes.wallet.activeBonusPaise,
+              activeBonusRupees: summaryRes.wallet.activeBonusRupees,
+              isBonusDeductedInCycle: summaryRes.wallet.isBonusDeductedInCycle,
+              cycleWithdrawnPaise: summaryRes.wallet.cycleWithdrawnPaise,
             });
           } else {
             const localWallet = await mockWalletService.getUserWalletSummary(user.id);
@@ -221,12 +233,22 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({
               createdAt: u.createdAt,
               upiId: u.upiId || undefined,
               bankAccount: u.bankAccount || undefined,
-              bonusPercentage: u.bonusPercentage ?? 10.0,
-              bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1000000,
+              bonusPercentage: u.bonusPercentage && u.bonusPercentage > 0 ? u.bonusPercentage : 0,
               totalBalancePaise: u.totalBalancePaise || 0,
+              activeBonusPaise: u.activeBonusPaise || 0,
+              lastDepositAmountPaise: u.lastDepositAmountPaise || 0,
+              cycleWithdrawnPaise: u.cycleWithdrawnPaise || 0,
+              isBonusDeductedInCycle: Boolean(u.isBonusDeductedInCycle),
               totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
               withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
-              isThresholdReached: Boolean(u.isThresholdReached),
+              lastLatitude: u.lastLatitude,
+              lastLongitude: u.lastLongitude,
+              lastLocationAccuracy: u.lastLocationAccuracy,
+              lastLocationAddress: u.lastLocationAddress,
+              lastLocationUpdatedAt: u.lastLocationUpdatedAt,
+              createdById: u.createdById,
+              createdByName: u.createdByName,
+              createdByRole: u.createdByRole,
             }));
             setUsers(mappedClients);
           }
