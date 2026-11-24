@@ -32,8 +32,14 @@ const formatUserResponse = (user: any) => {
     permissions: resolveUserPermissions(user.role, user.permissions),
     isBlocked: user.isBlocked,
     bonusPercentage: user.bonusPercentage,
-    bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
     totalBalancePaise: user.totalBalancePaise,
+    activeBonusPaise: user.activeBonusPaise || 0,
+    lastDepositAmountPaise: user.lastDepositAmountPaise || 0,
+    cycleWithdrawnPaise: user.cycleWithdrawnPaise || 0,
+    isBonusDeductedInCycle: Boolean(user.isBonusDeductedInCycle),
+    lastLatitude: user.lastLatitude ?? null,
+    lastLongitude: user.lastLongitude ?? null,
+    lastLocationUpdatedAt: user.lastLocationUpdatedAt ?? null,
     upiId: user.upiId || null,
     bankAccount: user.bankAccountNumber
       ? {
@@ -252,7 +258,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
           ? email.trim().toLowerCase()
           : null;
       if (cleanEmail && cleanEmail !== currentUser.email) {
-        const existingEmail = await prisma.user.findUnique({
+        const existingEmail = await prisma.user.findFirst({
           where: { email: cleanEmail },
         });
         if (existingEmail) {

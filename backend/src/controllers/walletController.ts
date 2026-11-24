@@ -2,6 +2,7 @@ import { Response } from 'express';
 import prisma from '../utils/prisma';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { TransactionType, TransactionStatus } from '@prisma/client';
+import { getRunningDailyBonusRate } from '../utils/dailyBonus';
 
 /**
  * POST /api/wallet/deposit
@@ -97,7 +98,6 @@ export const createDepositRequest = async (
       select: {
         id: true,
         bonusPercentage: true,
-        bonusThresholdLimitPaise: true,
         isBlocked: true,
       },
     });
@@ -113,8 +113,14 @@ export const createDepositRequest = async (
       });
     }
 
-    // 4. Calculate bonus based on user's bonus percentage
-    const bonusRate = user.bonusPercentage || 10.0;
+    // 4. Calculate bonus based on user's custom bonus percentage or daily running bonus
+    const dailyBonusInfo = await getRunningDailyBonusRate();
+    const bonusRate =
+      user.bonusPercentage && user.bonusPercentage > 0
+        ? user.bonusPercentage
+        : dailyBonusInfo.isActive
+        ? dailyBonusInfo.percentage
+        : 0.0;
     const calculatedBonusPaise = Math.round((parsedAmountPaise * bonusRate) / 100);
 
     // 5. Create PENDING deposit transaction
@@ -154,9 +160,9 @@ export const createDepositRequest = async (
 
 /**
  * POST /api/wallet/withdraw
- * User creates a withdrawal request with rule-based threshold evaluation.
- * If totalBalancePaise >= bonusThresholdLimitPaise, withdrawablePaise = min(totalBalancePaise, totalDepositPrincipalPaise).
- * Otherwise, full balance is withdrawable.
+ * User creates a withdrawal request with points cycle deduction rules.
+ * Debits points balance. If qualifying cashout (reaches balance or previous deposit),
+ * active cycle bonus is deducted from cash payout.
  */
 export const createWithdrawalRequest = async (
   req: AuthenticatedRequest,
@@ -173,14 +179,24 @@ export const createWithdrawalRequest = async (
     const userId = req.user.userId;
     const {
       amountPaise,
+      amount,
       paymentApp,
       paymentMethod,
       upiId,
       bankDetails,
       notes,
+      imageUrl,
+      screenshotUri,
+      imageHash,
     } = req.body;
 
-    const parsedAmountPaise = Number(amountPaise);
+    let parsedAmountPaise = Number(amountPaise);
+    if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
+      if (amount !== undefined && !isNaN(Number(amount))) {
+        parsedAmountPaise = Math.round(Number(amount) * 100);
+      }
+    }
+
     if (isNaN(parsedAmountPaise) || parsedAmountPaise <= 0) {
       return res.status(400).json({
         success: false,
@@ -188,14 +204,17 @@ export const createWithdrawalRequest = async (
       });
     }
 
-    // 1. Fetch user with current balance and threshold limit
+    // 1. Fetch user with current balance and cycle tracking fields
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         name: true,
         totalBalancePaise: true,
-        bonusThresholdLimitPaise: true,
+        activeBonusPaise: true,
+        lastDepositAmountPaise: true,
+        cycleWithdrawnPaise: true,
+        isBonusDeductedInCycle: true,
         isBlocked: true,
       },
     });
@@ -211,58 +230,33 @@ export const createWithdrawalRequest = async (
       });
     }
 
-    // 2. Check total points sufficiency
-    if (user.totalBalancePaise < parsedAmountPaise) {
-      return res.status(400).json({
-        success: false,
-        error: `Insufficient wallet balance. Total points: ₹${(
-          user.totalBalancePaise / 100
-        ).toFixed(2)}, Requested: ₹${(parsedAmountPaise / 100).toFixed(2)}.`,
-      });
+    // 2. Points & Cycle Deduction Rules:
+    // Withdrawal is NOT restricted by current wallet points balance.
+    // 1. Check if any withdrawal was already done without deposit again in this cycle:
+    const wasWithdrawalAlreadyDoneInCycle = Boolean(user.isBonusDeductedInCycle);
+    const activeBonusPaise = user.activeBonusPaise || 0;
+    const previousCycleWithdrawn = user.cycleWithdrawnPaise || 0;
+    const newCycleWithdrawn = previousCycleWithdrawn + parsedAmountPaise;
+
+    let bonusExcludedPaise = 0;
+    let isBonusDeductionTriggered = false;
+
+    if (wasWithdrawalAlreadyDoneInCycle) {
+      // If any withdrawal was already done without deposit again, give all demanded points
+      bonusExcludedPaise = 0;
+      isBonusDeductionTriggered = false;
+    } else {
+      // If withdrawal is equal to balance or greater than balance: deduct bonus points from last deposit
+      if (parsedAmountPaise >= user.totalBalancePaise && activeBonusPaise > 0) {
+        bonusExcludedPaise = activeBonusPaise;
+        isBonusDeductionTriggered = true;
+      } else {
+        bonusExcludedPaise = 0;
+        isBonusDeductionTriggered = false;
+      }
     }
 
-    // 3. Compute total approved deposit principal
-    const depositAggregate = await prisma.transaction.aggregate({
-      where: {
-        userId,
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.APPROVED,
-      },
-      _sum: {
-        amountPaise: true,
-      },
-    });
-    const totalDepositPrincipalPaise = depositAggregate._sum.amountPaise || 0;
-
-    // 4. Rule-Based Withdrawal Logic:
-    // If totalBalancePaise >= bonusThresholdLimitPaise,
-    // withdrawablePaise = min(totalBalancePaise, totalDepositPrincipalPaise) (bonus points excluded beyond limit).
-    // Otherwise, full eligible balance is withdrawable.
-    const isThresholdReached =
-      user.totalBalancePaise >= user.bonusThresholdLimitPaise;
-    const maxWithdrawablePaise = isThresholdReached
-      ? Math.min(user.totalBalancePaise, totalDepositPrincipalPaise)
-      : user.totalBalancePaise;
-
-    if (parsedAmountPaise > maxWithdrawablePaise) {
-      return res.status(400).json({
-        success: false,
-        error: `Requested withdrawal amount ₹${(
-          parsedAmountPaise / 100
-        ).toFixed(2)} exceeds your eligible withdrawable real cash limit of ₹${(
-          maxWithdrawablePaise / 100
-        ).toFixed(2)}. Because your total points (₹${(
-          user.totalBalancePaise / 100
-        ).toFixed(2)}) have reached or exceeded your threshold limit of ₹${(
-          user.bonusThresholdLimitPaise / 100
-        ).toFixed(2)}, bonus points cannot be withdrawn.`,
-        isThresholdReached,
-        maxWithdrawablePaise,
-        totalBalancePaise: user.totalBalancePaise,
-        bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
-        totalDepositPrincipalPaise,
-      });
-    }
+    const expectedCashPayoutPaise = Math.max(0, parsedAmountPaise - bonusExcludedPaise);
 
     const paymentAppStr = upiId
       ? `UPI: ${upiId}`
@@ -276,18 +270,28 @@ export const createWithdrawalRequest = async (
       ? { upiId }
       : undefined;
 
-    // 5. Create PENDING withdrawal transaction record
+    // 4. Create PENDING withdrawal transaction record
     const transaction = await prisma.transaction.create({
       data: {
         userId,
         type: TransactionType.WITHDRAWAL,
         status: TransactionStatus.PENDING,
         amountPaise: parsedAmountPaise,
-        bonusPaise: 0,
-        withdrawablePaise: maxWithdrawablePaise,
+        bonusPaise: bonusExcludedPaise,
+        cashPaidPaise: expectedCashPayoutPaise,
+        withdrawablePaise: expectedCashPayoutPaise,
+        imageUrl: imageUrl || screenshotUri || null,
+        imageHash: imageHash || null,
         paymentApp: paymentAppStr,
         rejectionReason: notes || null,
-        rawOcrData: rawData || undefined,
+        rawOcrData: {
+          ...(typeof rawData === 'object' ? rawData : {}),
+          requestedPointsPaise: parsedAmountPaise,
+          bonusExcludedPaise,
+          expectedCashPayoutPaise,
+          activeBonusAtStartPaise: activeBonusPaise,
+          isBonusDeductionTriggered,
+        },
       },
     });
 
@@ -295,8 +299,10 @@ export const createWithdrawalRequest = async (
       success: true,
       message: 'Withdrawal request created. Awaiting administrator approval.',
       transaction,
-      withdrawablePaise: maxWithdrawablePaise,
-      isThresholdReached,
+      requestedPointsPaise: parsedAmountPaise,
+      bonusDeductedPaise: bonusExcludedPaise,
+      expectedCashPayoutPaise,
+      isBonusDeductionTriggered,
     });
   } catch (error: any) {
     console.error('Error creating withdrawal request:', error);
@@ -358,6 +364,11 @@ export const getUserTransactions = async (
       totalPages: Math.ceil(total / limitNum),
       transactions: transactions.map((t) => ({
         ...t,
+        cashPaidPaise:
+          t.type === 'WITHDRAWAL'
+            ? t.cashPaidPaise || Math.max(0, t.amountPaise - t.bonusPaise)
+            : 0,
+        bonusDeductedPaise: t.type === 'WITHDRAWAL' ? t.bonusPaise : 0,
         totalCreditPaise: t.type === 'DEPOSIT' ? t.amountPaise + t.bonusPaise : undefined,
       })),
     });
@@ -398,7 +409,10 @@ export const getUserWalletSummary = async (
           phone: true,
           totalBalancePaise: true,
           bonusPercentage: true,
-          bonusThresholdLimitPaise: true,
+          activeBonusPaise: true,
+          lastDepositAmountPaise: true,
+          cycleWithdrawnPaise: true,
+          isBonusDeductedInCycle: true,
         },
       }),
       prisma.transaction.findMany({
@@ -410,36 +424,42 @@ export const getUserWalletSummary = async (
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
-    let totalDepositPaise = 0;
-    let totalBonusPaise = 0;
-    let totalWithdrawalPaise = 0;
+    let totalCashDepositedPaise = 0;
+    let totalPointsDepositedPaise = 0;
+    let totalPointsWithdrawnPaise = 0;
+    let totalCashWithdrawnPaise = 0;
+    let totalBonusEarnedPaise = 0;
+    let totalBonusDeductedPaise = 0;
     let pendingDepositCount = 0;
     let pendingWithdrawalCount = 0;
 
     for (const txn of transactions) {
       if (txn.type === 'DEPOSIT') {
         if (txn.status === 'APPROVED') {
-          totalDepositPaise += txn.amountPaise;
-          totalBonusPaise += txn.bonusPaise;
+          totalCashDepositedPaise += txn.amountPaise;
+          totalBonusEarnedPaise += txn.bonusPaise;
+          totalPointsDepositedPaise += txn.amountPaise + txn.bonusPaise;
         } else if (txn.status === 'PENDING') {
           pendingDepositCount += 1;
         }
       } else if (txn.type === 'WITHDRAWAL') {
         if (txn.status === 'APPROVED') {
-          totalWithdrawalPaise += txn.amountPaise;
+          totalPointsWithdrawnPaise += txn.amountPaise;
+          totalBonusDeductedPaise += txn.bonusPaise;
+          totalCashWithdrawnPaise +=
+            txn.cashPaidPaise || Math.max(0, txn.amountPaise - txn.bonusPaise);
         } else if (txn.status === 'PENDING') {
           pendingWithdrawalCount += 1;
         }
       } else if (txn.type === 'BONUS' && txn.status === 'APPROVED') {
-        totalBonusPaise += txn.amountPaise;
+        totalBonusEarnedPaise += txn.amountPaise;
+        totalPointsDepositedPaise += txn.amountPaise;
       }
     }
 
-    const isThresholdReached =
-      user.totalBalancePaise >= user.bonusThresholdLimitPaise;
-    const withdrawablePaise = isThresholdReached
-      ? Math.min(user.totalBalancePaise, totalDepositPaise)
-      : user.totalBalancePaise;
+    const hasActiveBonus = (user.activeBonusPaise || 0) > 0 && !user.isBonusDeductedInCycle;
+    const activeBonusPaise = hasActiveBonus ? user.activeBonusPaise : 0;
+    const netCashIfFullCashoutPaise = Math.max(0, user.totalBalancePaise - activeBonusPaise);
 
     return res.status(200).json({
       success: true,
@@ -447,17 +467,36 @@ export const getUserWalletSummary = async (
         userId: user.id,
         availableBalancePaise: user.totalBalancePaise,
         availableBalanceRupees: user.totalBalancePaise / 100,
-        withdrawablePaise,
-        withdrawableRupees: withdrawablePaise / 100,
-        isThresholdReached,
-        bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
-        bonusThresholdLimitRupees: user.bonusThresholdLimitPaise / 100,
-        totalDepositPaise,
-        totalDepositRupees: totalDepositPaise / 100,
-        totalBonusPaise,
-        totalBonusRupees: totalBonusPaise / 100,
-        totalWithdrawalPaise,
-        totalWithdrawalRupees: totalWithdrawalPaise / 100,
+        // The 4 Core Metrics
+        totalCashDepositedPaise,
+        totalCashDepositedRupees: totalCashDepositedPaise / 100,
+        totalPointsDepositedPaise,
+        totalPointsDepositedPoints: totalPointsDepositedPaise / 100,
+        totalPointsWithdrawnPaise,
+        totalPointsWithdrawnPoints: totalPointsWithdrawnPaise / 100,
+        totalCashWithdrawnPaise,
+        totalCashWithdrawnRupees: totalCashWithdrawnPaise / 100,
+        totalBonusDeductedPaise,
+        totalBonusDeductedRupees: totalBonusDeductedPaise / 100,
+
+        // Bonus and Cycle Metrics
+        activeBonusPaise,
+        activeBonusRupees: activeBonusPaise / 100,
+        isBonusDeductedInCycle: user.isBonusDeductedInCycle,
+        cycleWithdrawnPaise: user.cycleWithdrawnPaise,
+        lastDepositAmountPaise: user.lastDepositAmountPaise,
+        withdrawablePaise: user.totalBalancePaise,
+        withdrawableRupees: user.totalBalancePaise / 100,
+        netCashIfFullCashoutPaise,
+        netCashIfFullCashoutRupees: netCashIfFullCashoutPaise / 100,
+
+        // Backward compatibility
+        totalDepositPaise: totalCashDepositedPaise,
+        totalDepositRupees: totalCashDepositedPaise / 100,
+        totalBonusPaise: totalBonusEarnedPaise,
+        totalBonusRupees: totalBonusEarnedPaise / 100,
+        totalWithdrawalPaise: totalPointsWithdrawnPaise,
+        totalWithdrawalRupees: totalPointsWithdrawnPaise / 100,
         pendingDepositCount,
         pendingWithdrawalCount,
         bonusPercentage: user.bonusPercentage,

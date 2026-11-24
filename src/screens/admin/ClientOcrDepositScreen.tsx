@@ -10,6 +10,9 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
+  Platform,
+  KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -33,6 +36,9 @@ type RouteParams = {
   ClientOcrDeposit?: {
     clientId?: string;
     initialMode?: 'ocr' | 'manual';
+    imageUri?: string;
+    source?: 'gallery' | 'whatsapp_share';
+    sharedAt?: number;
   };
 };
 
@@ -46,6 +52,7 @@ export const ClientOcrDepositScreen = () => {
   const canManual = isSuperAdmin || permissions.canDeposit;
 
   const [mode, setMode] = useState<'ocr' | 'manual'>(() => {
+    if (route.params?.imageUri) return 'ocr';
     if (route.params?.initialMode === 'manual' && canManual) return 'manual';
     if (canOcr) return 'ocr';
     return 'manual';
@@ -114,12 +121,17 @@ export const ClientOcrDepositScreen = () => {
           createdAt: u.createdAt,
           upiId: u.upiId || undefined,
           bankAccount: u.bankAccount || undefined,
-          bonusPercentage: u.bonusPercentage ?? 10.0,
-          bonusThresholdLimitPaise: u.bonusThresholdLimitPaise ?? 1500000,
+          bonusPercentage: u.bonusPercentage ?? undefined,
           totalBalancePaise: u.totalBalancePaise || 0,
+          activeBonusPaise: u.activeBonusPaise || 0,
+          lastDepositAmountPaise: u.lastDepositAmountPaise || 0,
+          cycleWithdrawnPaise: u.cycleWithdrawnPaise || 0,
+          isBonusDeductedInCycle: Boolean(u.isBonusDeductedInCycle),
           totalDepositPrincipalPaise: u.totalDepositPrincipalPaise || 0,
           withdrawablePaise: u.withdrawablePaise ?? u.totalBalancePaise ?? 0,
-          isThresholdReached: Boolean(u.isThresholdReached),
+          createdById: u.createdById,
+          createdByName: u.createdByName,
+          createdByRole: u.createdByRole,
         }));
         setClients(mapped);
 
@@ -221,6 +233,14 @@ export const ClientOcrDepositScreen = () => {
     }
   };
 
+  // Auto-scan screenshot when received from Gallery or WhatsApp share intent
+  useEffect(() => {
+    if (route.params?.imageUri) {
+      setMode('ocr');
+      runOcrOnImage(route.params.imageUri);
+    }
+  }, [route.params?.imageUri, route.params?.sharedAt]);
+
   const handlePickFromGallery = async () => {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -286,7 +306,14 @@ export const ClientOcrDepositScreen = () => {
   // Day-based running bonus set by Superadmin applies automatically to deposits (0% if none set)
   const numericAmount = parseFloat(amountText.replace(/,/g, '')) || 0;
   const amountPaise = numericAmount > 0 ? rupeesToPaise(numericAmount) : 0;
-  const effectiveBonusPct = isDailyBonusActive ? dailyBonusRate : 0.0;
+  const hasClientCustomBonus = Boolean(
+    selectedClient?.bonusPercentage && selectedClient.bonusPercentage > 0
+  );
+  const effectiveBonusPct = hasClientCustomBonus
+    ? selectedClient!.bonusPercentage!
+    : isDailyBonusActive
+    ? dailyBonusRate
+    : 0.0;
   const bonusPaise = Math.round((amountPaise * effectiveBonusPct) / 100);
   const totalCreditPaise = amountPaise + bonusPaise;
 
@@ -306,7 +333,7 @@ export const ClientOcrDepositScreen = () => {
         name: quickClientName.trim(),
         phone: quickClientPhone.trim(),
         userType: 'CLIENT',
-        bonusPercentage: effectiveBonusPct,
+        // Client specific bonus will NOT auto assign; daily running bonus applies dynamically
       });
 
       if (res.success && res.user) {
@@ -319,12 +346,17 @@ export const ClientOcrDepositScreen = () => {
           accountType: 'CLIENT',
           status: 'active',
           createdAt: res.user.createdAt,
-          bonusPercentage: effectiveBonusPct,
-          bonusThresholdLimitPaise: res.user.bonusThresholdLimitPaise || 1500000,
+          bonusPercentage: undefined,
           totalBalancePaise: 0,
+          activeBonusPaise: 0,
+          lastDepositAmountPaise: 0,
+          cycleWithdrawnPaise: 0,
+          isBonusDeductedInCycle: false,
           totalDepositPrincipalPaise: 0,
           withdrawablePaise: 0,
-          isThresholdReached: false,
+          createdById: res.user.createdById,
+          createdByName: res.user.createdByName,
+          createdByRole: res.user.createdByRole,
         };
 
         setClients((prev) => [newClient, ...prev]);
@@ -354,14 +386,53 @@ export const ClientOcrDepositScreen = () => {
       return;
     }
 
-    if (amountPaise <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter or verify a valid deposit amount.');
-      return;
-    }
+    if (mode === 'ocr') {
+      if (!imageUri) {
+        Alert.alert('Upload Receipt', 'Please upload or capture a payment screenshot for OCR deposit.');
+        return;
+      }
 
-    if (mode === 'ocr' && !imageUri) {
-      Alert.alert('Upload Receipt', 'Please upload or capture a payment screenshot for OCR deposit.');
-      return;
+      if (!amountText || amountPaise <= 0) {
+        Alert.alert(
+          'Amount Not Detected ⚠️',
+          'OCR could not extract the deposit amount from this screenshot.\n\nScanned values cannot be typed manually in OCR mode. To enter deposit details manually, please switch to Direct Deposit.',
+          canManual
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Switch to Direct Deposit', onPress: () => setMode('manual') },
+              ]
+            : [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      if (!utrText.trim()) {
+        Alert.alert(
+          'UTR Not Detected ⚠️',
+          'OCR could not extract a valid UTR / Reference number from this receipt.\n\nScanned values cannot be modified in OCR mode. To enter reference details manually, please switch to Direct Deposit.',
+          canManual
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Switch to Direct Deposit', onPress: () => setMode('manual') },
+              ]
+            : [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      // Anti-tamper validation
+      if (extracted?.amountPaise && extracted.amountPaise > 0 && extracted.amountPaise !== amountPaise) {
+        Alert.alert(
+          'Anti-Tamper Warning 🛡️',
+          'The deposit amount does not match the OCR scanned amount. To modify the amount, please switch to Direct Deposit.'
+        );
+        return;
+      }
+    } else {
+      if (amountPaise <= 0) {
+        Alert.alert('Invalid Amount', 'Please enter a valid deposit amount.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -379,16 +450,28 @@ export const ClientOcrDepositScreen = () => {
 
       if (res.success) {
         await Promise.all([refreshData(), loadClients()]);
+        const targetClientId = selectedClient.id;
+        const newBalanceRupees = (
+          (res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise) / 100
+        ).toLocaleString('en-IN');
+
         Alert.alert(
           'Deposit Credited Instantly! ✅',
-          `${formatPaiseToINR(totalCreditPaise)} (Principal ${formatPaiseToINR(
+          `${formatPaiseToINR(totalCreditPaise)} Points (${formatPaiseToINR(
             amountPaise
-          )} + ${effectiveBonusPct}% Daily Bonus ${formatPaiseToINR(
+          )} Cash + ${effectiveBonusPct}% Bonus: ${formatPaiseToINR(
             bonusPaise
-          )}) has been auto-credited to ${selectedClient.name}.\n\nNew Balance: ${formatPaiseToINR(
-            res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise
-          )}`,
-          [{ text: 'Done', onPress: resetForm }]
+          )} Points) auto-credited to ${selectedClient.name}.\n\nTotal Points Balance: ${newBalanceRupees} Points`,
+          [
+            { text: 'Done', onPress: resetForm },
+            {
+              text: 'View in Withdraw Screen 💸',
+              onPress: () => {
+                resetForm();
+                navigation.navigate('ClientWithdraw', { clientId: targetClientId });
+              },
+            },
+          ]
         );
       } else if (res.status === 409) {
         Alert.alert(
@@ -542,6 +625,19 @@ export const ClientOcrDepositScreen = () => {
                   </View>
                 </TouchableOpacity>
 
+                {route.params?.source === 'gallery' && (
+                  <View style={styles.sourceTag}>
+                    <Ionicons name="images-outline" size={14} color="#2563EB" />
+                    <Text style={styles.sourceTagText}>Shared from Gallery (Auto-Scanned)</Text>
+                  </View>
+                )}
+                {route.params?.source === 'whatsapp_share' && (
+                  <View style={[styles.sourceTag, { backgroundColor: '#E6F8EF' }]}>
+                    <Ionicons name="logo-whatsapp" size={14} color="#16A36A" />
+                    <Text style={[styles.sourceTagText, { color: '#0E7047' }]}>Shared from WhatsApp</Text>
+                  </View>
+                )}
+
                 {isScanning ? (
                   <View style={styles.scanningBox}>
                     <ActivityIndicator size="small" color={colors.primary} />
@@ -680,30 +776,73 @@ export const ClientOcrDepositScreen = () => {
             {mode === 'ocr' ? '3. Verify Extracted Details' : '2. Enter Deposit Details'}
           </Text>
 
+          {/* Anti-Tamper Notice in OCR mode */}
+          {mode === 'ocr' && (
+            <View style={styles.ocrLockedNotice}>
+              <View style={styles.ocrLockedHeader}>
+                <Ionicons name="lock-closed" size={16} color="#D97706" />
+                <Text style={styles.ocrLockedTitle}>Anti-Tamper Rule: Scanned Values Locked</Text>
+              </View>
+              <Text style={styles.ocrLockedDesc}>
+                Values extracted from receipt cannot be modified in OCR mode. To enter or adjust deposit details manually, please switch to Direct Deposit.
+              </Text>
+              {canManual && (
+                <TouchableOpacity
+                  style={styles.switchModeActionBtn}
+                  onPress={() => setMode('manual')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="create-outline" size={15} color={colors.primary} />
+                  <Text style={styles.switchModeActionText}>Switch to Direct Deposit to Modify ✏️</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           <CustomInput
             label="Deposit Amount (₹)"
             placeholder="e.g. 5000"
             keyboardType="decimal-pad"
             leftIcon="cash-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={amountText}
             onChangeText={setAmountText}
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Extracted from OCR scan (Locked). Switch to Direct Deposit to modify.'
+                : undefined
+            }
           />
 
           <CustomInput
             label="UTR / 12-Digit Reference Number"
             placeholder="e.g. 432156789012"
             leftIcon="barcode-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={utrText}
             onChangeText={setUtrText}
-            helperText="Protected by duplicate UTR anti-fraud guard"
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Extracted from OCR scan (Locked). Switch to Direct Deposit to modify.'
+                : 'Protected by duplicate UTR anti-fraud guard'
+            }
           />
 
           <CustomInput
             label="Payment App / Channel"
             placeholder="e.g. Google Pay, PhonePe, Paytm, Bank IMPS"
             leftIcon="phone-portrait-outline"
+            rightIcon={mode === 'ocr' ? 'lock-closed' : undefined}
             value={paymentAppText}
             onChangeText={setPaymentAppText}
+            editable={mode !== 'ocr'}
+            helperText={
+              mode === 'ocr'
+                ? '🔒 Detected from OCR receipt (Locked)'
+                : undefined
+            }
           />
 
           <CustomInput
@@ -763,6 +902,11 @@ export const ClientOcrDepositScreen = () => {
         onRequestClose={() => setPickerVisible(false)}
       >
         <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setPickerVisible(false)}
+          />
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Client Account</Text>
@@ -809,9 +953,12 @@ export const ClientOcrDepositScreen = () => {
             )}
 
             <FlatList
+              style={{ flex: 1 }}
               data={filteredClients}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingBottom: 24 }}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 32, flexGrow: 1 }}
               ListEmptyComponent={
                 <View style={styles.emptyListBox}>
                   <Text style={styles.emptyListText}>
@@ -882,67 +1029,80 @@ export const ClientOcrDepositScreen = () => {
         transparent
         onRequestClose={() => setQuickCreateVisible(false)}
       >
-        <View style={styles.modalOverlayCenter}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlayCenter}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setQuickCreateVisible(false)}
+          />
           <View style={styles.quickCreateCard}>
-            <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Add Client Account</Text>
-                <Text style={styles.quickCreateSubText}>
-                  Only Name & Phone required • Running Bonus: {effectiveBonusPct}%
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => setQuickCreateVisible(false)}>
-                <Ionicons name="close" size={24} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ marginTop: 14 }}>
-              <Text style={styles.quickFieldLabel}>Client Full Name *</Text>
-              <TextInput
-                style={styles.quickInput}
-                placeholder="e.g. Ramesh Patel"
-                placeholderTextColor={colors.textLight}
-                value={quickClientName}
-                onChangeText={setQuickClientName}
-              />
-
-              <Text style={[styles.quickFieldLabel, { marginTop: 12 }]}>
-                Phone Number (10 Digits) *
-              </Text>
-              <TextInput
-                style={styles.quickInput}
-                placeholder="e.g. 9876543210"
-                placeholderTextColor={colors.textLight}
-                keyboardType="phone-pad"
-                maxLength={10}
-                value={quickClientPhone}
-                onChangeText={setQuickClientPhone}
-              />
-
-              <View style={styles.dailyBonusNoticePill}>
-                <Ionicons name="gift" size={16} color="#15803D" />
-                <Text style={styles.dailyBonusNoticeText}>
-                  Today's running bonus ({effectiveBonusPct}%) will automatically apply to this client's deposits.
-                </Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={styles.modalTitle}>Add Client Account</Text>
+                  <Text style={styles.quickCreateSubText}>
+                    Only Name & Phone required • Running Bonus: {effectiveBonusPct}%
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setQuickCreateVisible(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.quickModalActions}>
-                <SecondaryButton
-                  title="Cancel"
-                  onPress={() => setQuickCreateVisible(false)}
-                  style={{ flex: 1 }}
-                  disabled={isQuickCreating}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.quickFieldLabel}>Client Full Name *</Text>
+                <TextInput
+                  style={styles.quickInput}
+                  placeholder="e.g. Ramesh Patel"
+                  placeholderTextColor={colors.textLight}
+                  value={quickClientName}
+                  onChangeText={setQuickClientName}
                 />
-                <PrimaryButton
-                  title={isQuickCreating ? 'Creating...' : 'Create & Select'}
-                  onPress={handleQuickCreateClient}
-                  loading={isQuickCreating}
-                  style={{ flex: 1 }}
+
+                <Text style={[styles.quickFieldLabel, { marginTop: 12 }]}>
+                  Phone Number (10 Digits) *
+                </Text>
+                <TextInput
+                  style={styles.quickInput}
+                  placeholder="e.g. 9876543210"
+                  placeholderTextColor={colors.textLight}
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                  value={quickClientPhone}
+                  onChangeText={setQuickClientPhone}
                 />
+
+                <View style={styles.dailyBonusNoticePill}>
+                  <Ionicons name="gift" size={16} color="#15803D" />
+                  <Text style={styles.dailyBonusNoticeText}>
+                    Today's running bonus ({effectiveBonusPct}%) will automatically apply to this client's deposits.
+                  </Text>
+                </View>
+
+                <View style={styles.quickModalActions}>
+                  <SecondaryButton
+                    title="Cancel"
+                    onPress={() => setQuickCreateVisible(false)}
+                    style={{ flex: 1 }}
+                    disabled={isQuickCreating}
+                  />
+                  <PrimaryButton
+                    title={isQuickCreating ? 'Creating...' : 'Create & Select'}
+                    onPress={handleQuickCreateClient}
+                    loading={isQuickCreating}
+                    style={{ flex: 1 }}
+                  />
+                </View>
               </View>
-            </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Receipt Image Fullscreen Viewer */}
@@ -1245,8 +1405,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
-    padding: 18,
+    height: '85%',
+    maxHeight: '90%',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 16,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1438,6 +1601,64 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 18,
+  },
+  ocrLockedNotice: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.2,
+    borderColor: '#FCD34D',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+  },
+  ocrLockedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  ocrLockedTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  ocrLockedDesc: {
+    fontSize: 12,
+    color: '#B45309',
+    lineHeight: 17,
+  },
+  switchModeActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginTop: 10,
+    alignSelf: 'flex-start',
+  },
+  switchModeActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  sourceTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 6,
+    alignSelf: 'flex-start',
+  },
+  sourceTagText: {
+    fontSize: 12,
+    color: '#1D4ED8',
+    fontWeight: '700',
   },
 });
 

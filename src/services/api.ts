@@ -2,10 +2,14 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { STORAGE_KEYS } from '../utils/constants';
+import { EmployeePermissions } from '../types';
+
+// Local dev IP: Wi-Fi IP of the host development PC
+export const LOCAL_DEV_IP = '10.247.202.104';
 
 // Determine default API host dynamically
 const getDevHost = (): string => {
-  // 1. Expo Go on physical device or emulator with hostUri (LAN IP: e.g. 192.168.1.10)
+  // 1. Expo Go on physical device or emulator with hostUri (LAN IP: e.g. 10.247.202.104)
   const hostUri = Constants.expoConfig?.hostUri;
   if (hostUri) {
     const ip = hostUri.split(':')[0];
@@ -14,18 +18,20 @@ const getDevHost = (): string => {
     }
   }
 
-  // 2. Android emulator standalone alias
+  // 2. Android physical device or standalone APK (reaches dev PC via Wi-Fi)
   if (Platform.OS === 'android') {
-    return '10.0.2.2:5000';
+    return `${LOCAL_DEV_IP}:5000`;
   }
 
+  // 3. Web or iOS Simulator or local browser
   return 'localhost:5000';
 };
 
-export const PRODUCTION_API_URL = 'https://vf-wallet-backend.onrender.com/api';
+export const LOCAL_API_URL = `http://${getDevHost()}/api`;
+export const PRODUCTION_API_URL = LOCAL_API_URL;
 
-// Default to production deployed backend on Render (especially critical for APK release/debug builds)
-export const DEFAULT_API_BASE_URL = PRODUCTION_API_URL;
+// Default to local backend
+export const DEFAULT_API_BASE_URL = LOCAL_API_URL;
 
 let activeBaseUrl = DEFAULT_API_BASE_URL;
 
@@ -129,6 +135,42 @@ async function request<T = any>(
       ...data,
     };
   } catch (error: any) {
+    // If local network error, attempt alternative local endpoints (e.g. adb reverse localhost, Wi-Fi LAN IP, or emulator)
+    if (!endpoint.startsWith('http')) {
+      const candidates = [
+        `http://${LOCAL_DEV_IP}:5000/api`,
+        'http://localhost:5000/api',
+        'http://10.0.2.2:5000/api',
+      ].filter((cand) => cand !== activeBaseUrl);
+
+      for (const fallbackBase of candidates) {
+        try {
+          const fallbackUrl = `${fallbackBase}${endpoint}`;
+          const fallbackRes = await fetch(fallbackUrl, {
+            ...fetchOptions,
+            headers,
+          });
+          const fallbackData = await fallbackRes.json().catch(() => ({}));
+          activeBaseUrl = fallbackBase; // Lock into working local endpoint
+          if (!fallbackRes.ok) {
+            return {
+              success: false,
+              status: fallbackRes.status,
+              error: fallbackData.error || fallbackData.message || `Request failed with status ${fallbackRes.status}`,
+              ...fallbackData,
+            };
+          }
+          return {
+            success: true,
+            status: fallbackRes.status,
+            ...fallbackData,
+          };
+        } catch {
+          // Continue to next candidate
+        }
+      }
+    }
+
     const isTimeout = error.name === 'AbortError';
     return {
       success: false,
@@ -208,14 +250,7 @@ export const adminApi = {
     password?: string;
     userType?: 'CLIENT' | 'EMPLOYEE';
     role?: 'CLIENT' | 'EMPLOYEE';
-    permissions?: {
-      canOcrUpload: boolean;
-      canDeposit: boolean;
-      canWithdraw: boolean;
-      canSetBonus: boolean;
-      canSetThreshold: boolean;
-      canManageClients: boolean;
-    };
+    permissions?: Partial<EmployeePermissions>;
     upiId?: string;
     bankAccount?: {
       accountNumber: string;
@@ -226,7 +261,13 @@ export const adminApi = {
     bonusPercentage?: number;
     bonusThresholdLimit?: number;
   }) {
-    return apiClient.post('/admin/users/create', data);
+    // For clients: automatically provide an internal dummy password to maintain
+    // 100% backward compatibility with deployed backends that require a 4+ char password.
+    const payload = { ...data };
+    if (!payload.password && (payload.userType === 'CLIENT' || payload.role === 'CLIENT' || !payload.userType)) {
+      payload.password = `Client@${Date.now()}`;
+    }
+    return apiClient.post('/admin/users/create', payload);
   },
 
   async updateUser(
@@ -250,14 +291,7 @@ export const adminApi = {
 
   async updateEmployeePermissions(
     userId: string,
-    permissions: {
-      canOcrUpload: boolean;
-      canDeposit: boolean;
-      canWithdraw: boolean;
-      canSetBonus: boolean;
-      canSetThreshold: boolean;
-      canManageClients: boolean;
-    },
+    permissions: Partial<EmployeePermissions>,
     password?: string
   ) {
     return apiClient.patch(`/admin/users/${userId}/permissions`, {
@@ -302,6 +336,9 @@ export const adminApi = {
       upiId?: string;
       bankDetails?: any;
       notes?: string;
+      screenshotUri?: string;
+      imageUrl?: string;
+      imageHash?: string;
     }
   ) {
     return apiClient.post(`/admin/clients/${clientId}/withdraw`, data);
@@ -406,8 +443,63 @@ export const adminApi = {
     return apiClient.get('/admin/daily-bonus');
   },
 
-  async setDailyBonus(percentage: number, isActive: boolean = true) {
-    return apiClient.post('/admin/daily-bonus', { percentage, isActive });
+  async setDailyBonus(
+    data:
+      | {
+          percentage?: number;
+          isActive?: boolean;
+          thresholdLimit?: number;
+          thresholdLimitPaise?: number;
+          isThresholdActive?: boolean;
+        }
+      | number,
+    legacyIsActive: boolean = true
+  ) {
+    if (typeof data === 'number') {
+      return apiClient.post('/admin/daily-bonus', {
+        percentage: data,
+        isActive: legacyIsActive,
+      });
+    }
+    return apiClient.post('/admin/daily-bonus', data);
+  },
+
+  async updateEmployeeLocation(data: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    address?: string;
+  }) {
+    return apiClient.post('/admin/employee/location', data);
+  },
+
+  async getEmployeeLocations() {
+    return apiClient.get('/admin/employees/locations');
+  },
+
+  // Backup, Reset & Restore API endpoints
+  async resetApplicationData() {
+    return apiClient.post('/admin/backup/reset-app');
+  },
+
+  async deleteTransaction(transactionId: string) {
+    return apiClient.post(`/admin/backup/delete-transaction/${transactionId}`);
+  },
+
+  async getBackupSnapshots() {
+    return apiClient.get('/admin/backup/snapshots');
+  },
+
+  async restoreBackupSnapshot(snapshotId: string) {
+    return apiClient.post(`/admin/backup/restore/${snapshotId}`);
+  },
+
+  async undoRestoreBackupSnapshot(snapshotId: string) {
+    return apiClient.post(`/admin/backup/undo-restore/${snapshotId}`);
+  },
+
+  async deleteBackupPermanently(snapshotId: string) {
+    return apiClient.delete(`/admin/backup/permanent/${snapshotId}`);
   },
 };
 
@@ -435,6 +527,9 @@ export const walletApi = {
     upiId?: string;
     bankDetails?: any;
     notes?: string;
+    screenshotUri?: string;
+    imageUrl?: string;
+    imageHash?: string;
   }) {
     return apiClient.post('/wallet/withdraw', data);
   },

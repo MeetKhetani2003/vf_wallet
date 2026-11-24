@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { useAuth } from '../hooks/useAuth';
+import { useEmployeeLocationTracker } from '../hooks/useEmployeeLocationTracker';
 
 import { AdminDashboard } from '../screens/admin/AdminDashboard';
 import { UserManagementScreen } from '../screens/admin/UserManagementScreen';
@@ -15,6 +16,7 @@ import { BonusSettingsScreen } from '../screens/admin/BonusSettingsScreen';
 import { AdminTransactionHistory } from '../screens/admin/AdminTransactionHistory';
 import { AdminProfileScreen } from '../screens/admin/AdminProfileScreen';
 import { ResetDataScreen } from '../screens/admin/ResetDataScreen';
+import { BackupRestoreScreen } from '../screens/admin/BackupRestoreScreen';
 import { TransactionDetailsScreen } from '../screens/user/TransactionDetailsScreen';
 
 export type AdminStackParamList = {
@@ -23,13 +25,20 @@ export type AdminStackParamList = {
   UserDetails: { userId: string };
   Users: { initialTab?: 'CLIENT' | 'EMPLOYEE' } | undefined;
   ClientOcrDeposit:
-    | { clientId?: string; initialMode?: 'ocr' | 'manual' }
+    | {
+        clientId?: string;
+        initialMode?: 'ocr' | 'manual';
+        imageUri?: string;
+        source?: 'gallery' | 'whatsapp_share';
+        sharedAt?: number;
+      }
     | undefined;
   ClientWithdraw: { clientId?: string } | undefined;
   BonusSettings: undefined;
   AdminTransactions: undefined;
   TransactionDetails: { transactionId: string };
   ResetData: undefined;
+  BackupRestore: undefined;
 };
 
 const Tab = createBottomTabNavigator();
@@ -37,12 +46,12 @@ const Stack = createNativeStackNavigator<AdminStackParamList>();
 
 const AdminTabNavigator = () => {
   const { isSuperAdmin, permissions } = useAuth();
+  useEmployeeLocationTracker();
 
   const canViewClients =
     isSuperAdmin ||
     permissions.canManageClients ||
-    permissions.canSetBonus ||
-    permissions.canSetThreshold;
+    permissions.canSetBonus;
   const canDeposit =
     isSuperAdmin || permissions.canOcrUpload || permissions.canDeposit;
   const canWithdraw = isSuperAdmin || permissions.canWithdraw;
@@ -174,6 +183,7 @@ export const AdminNavigator = () => {
       <Stack.Screen name="AdminTransactions" component={AdminTransactionHistory} />
       <Stack.Screen name="TransactionDetails" component={TransactionDetailsScreen} />
       <Stack.Screen name="ResetData" component={ResetDataScreen} />
+      <Stack.Screen name="BackupRestore" component={BackupRestoreScreen} />
     </Stack.Navigator>
   );
 };

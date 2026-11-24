@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import bcrypt from 'bcryptjs';
-import prisma from '../utils/prisma';
+import prisma, { withDbRetry } from '../utils/prisma';
 import { Role, TransactionStatus, TransactionType } from '@prisma/client';
 import { AuthenticatedRequest } from '../middleware/auth';
 import {
@@ -9,13 +9,43 @@ import {
   isClientRole,
 } from '../utils/permissions';
 import { getRunningDailyBonusRate } from '../utils/dailyBonus';
+import {
+  createAppResetBackup,
+  createSingleTransactionBackup,
+  getAllBackupSnapshots,
+  restoreBackupSnapshot,
+  undoRestoreBackupSnapshot,
+  deleteBackupPermanently,
+} from '../utils/backupService';
 
-const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
-  const principal = totalDepositPrincipalPaise ?? 0;
-  const isThresholdReached =
-    user.totalBalancePaise >= user.bonusThresholdLimitPaise;
-  const withdrawablePaise = isThresholdReached
-    ? Math.min(user.totalBalancePaise, principal)
+interface UserAggregatedMetrics {
+  totalCashDepositedPaise: number;
+  totalPointsDepositedPaise: number;
+  totalPointsWithdrawnPaise: number;
+  totalCashWithdrawnPaise: number;
+  totalBonusDeductedPaise: number;
+}
+
+const formatManagedUser = (
+  user: any,
+  totalDepositPrincipalPaise?: number,
+  allocatedBonusPaise?: number,
+  metrics?: UserAggregatedMetrics
+) => {
+  const cashDeposited = metrics?.totalCashDepositedPaise ?? (totalDepositPrincipalPaise ?? 0);
+  const bonusEarned = allocatedBonusPaise ?? 0;
+  const pointsDeposited = metrics?.totalPointsDepositedPaise ?? (cashDeposited + bonusEarned);
+  const pointsWithdrawn = metrics?.totalPointsWithdrawnPaise ?? 0;
+  const cashWithdrawn = metrics?.totalCashWithdrawnPaise ?? 0;
+  const bonusDeducted = metrics?.totalBonusDeductedPaise ?? 0;
+
+  const activeBonusPaise = user.activeBonusPaise || 0;
+  const hasActiveBonus = activeBonusPaise > 0 && !user.isBonusDeductedInCycle;
+
+  // Withdrawable points in cash:
+  // If client has an active bonus not yet deducted, full cashout excludes active bonus
+  const withdrawablePaise = hasActiveBonus
+    ? Math.max(0, user.totalBalancePaise - activeBonusPaise)
     : user.totalBalancePaise;
 
   return {
@@ -33,13 +63,24 @@ const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
     permissions: resolveUserPermissions(user.role, user.permissions),
     isBlocked: user.isBlocked,
     bonusPercentage: user.bonusPercentage,
-    bonusThresholdLimitPaise: user.bonusThresholdLimitPaise,
-    thresholdStartLimitPaise: user.bonusThresholdLimitPaise,
-    thresholdStartLimitRupees: user.bonusThresholdLimitPaise / 100,
     totalBalancePaise: user.totalBalancePaise,
-    totalDepositPrincipalPaise: principal,
+    totalDepositPrincipalPaise: cashDeposited,
+    // The 4 Core Client Metrics
+    totalCashDepositedPaise: cashDeposited,
+    totalPointsDepositedPaise: pointsDeposited,
+    totalPointsWithdrawnPaise: pointsWithdrawn,
+    totalCashWithdrawnPaise: cashWithdrawn,
+    totalBonusDeductedPaise: bonusDeducted,
+    activeBonusPaise,
+    lastDepositAmountPaise: user.lastDepositAmountPaise || 0,
+    cycleWithdrawnPaise: user.cycleWithdrawnPaise || 0,
+    isBonusDeductedInCycle: Boolean(user.isBonusDeductedInCycle),
     withdrawablePaise,
-    isThresholdReached,
+    lastLatitude: user.lastLatitude || null,
+    lastLongitude: user.lastLongitude || null,
+    lastLocationAccuracy: user.lastLocationAccuracy || null,
+    lastLocationAddress: user.lastLocationAddress || null,
+    lastLocationUpdatedAt: user.lastLocationUpdatedAt || null,
     upiId: user.upiId || null,
     bankAccount: user.bankAccountNumber
       ? {
@@ -50,6 +91,9 @@ const formatManagedUser = (user: any, totalDepositPrincipalPaise?: number) => {
         }
       : null,
     avatarUrl: user.avatarUrl || null,
+    createdById: user.createdById || null,
+    createdByName: user.createdByName || null,
+    createdByRole: user.createdByRole || null,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     ...(user._count ? { totalTransactions: user._count.transactions } : {}),
@@ -77,9 +121,7 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
       permissions,
       upiId,
       bankAccount,
-      bonusPercentage = 10.0,
-      bonusThresholdLimit,
-      bonusThresholdLimitPaise,
+      bonusPercentage,
     } = req.body;
 
     // Determine target role: CLIENT or EMPLOYEE
@@ -137,10 +179,12 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
         ? email.trim().toLowerCase()
         : null;
 
-    // Check if phone already registered
-    const existingPhone = await prisma.user.findUnique({
-      where: { phone: cleanPhone },
-    });
+    // Check if phone already registered (with auto-reconnect retry on serverless drop)
+    const existingPhone = await withDbRetry(() =>
+      prisma.user.findUnique({
+        where: { phone: cleanPhone },
+      })
+    );
 
     if (existingPhone) {
       return res.status(409).json({
@@ -151,9 +195,11 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
 
     // Check if email already registered (if provided)
     if (cleanEmail) {
-      const existingEmail = await prisma.user.findUnique({
-        where: { email: cleanEmail },
-      });
+      const existingEmail = await withDbRetry(() =>
+        prisma.user.findFirst({
+          where: { email: cleanEmail },
+        })
+      );
 
       if (existingEmail) {
         return res.status(409).json({
@@ -163,33 +209,18 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    // Bonus & threshold config (for Clients)
-    let thresholdPaise = 1500000; // Default threshold start limit: ₹15,000 = 1,500,000 paise
-    const canConfigureThreshold =
-      req.user.isSuperAdmin || req.user.permissions.canSetThreshold;
-    if (canConfigureThreshold) {
-      if (
-        bonusThresholdLimitPaise !== undefined &&
-        Number.isInteger(Number(bonusThresholdLimitPaise))
-      ) {
-        thresholdPaise = Number(bonusThresholdLimitPaise);
-      } else if (bonusThresholdLimit !== undefined) {
-        const parsedLimit = Number(bonusThresholdLimit);
-        if (!isNaN(parsedLimit) && parsedLimit >= 0) {
-          thresholdPaise = Math.round(parsedLimit * 100);
-        }
-      }
-    }
-
-    // Default to today's active running bonus rate (or 0% if none set)
-    const dailyInfo = await getRunningDailyBonusRate();
-    let finalBonusPercentage = dailyInfo.isActive ? dailyInfo.percentage : 0.0;
-
+    // Client-specific bonus: will NOT auto-assign. Only set if explicitly configured by admin.
+    let finalBonusPercentage: number | null = null;
     const canConfigureBonus =
       req.user.isSuperAdmin || req.user.permissions.canSetBonus;
-    if (canConfigureBonus && bonusPercentage !== undefined) {
+    if (
+      canConfigureBonus &&
+      bonusPercentage !== undefined &&
+      bonusPercentage !== null &&
+      bonusPercentage !== ''
+    ) {
       const parsedBonus = Number(bonusPercentage);
-      if (!isNaN(parsedBonus) && parsedBonus >= 0 && parsedBonus <= 100) {
+      if (!isNaN(parsedBonus) && parsedBonus > 0 && parsedBonus <= 100) {
         finalBonusPercentage = parsedBonus;
       }
     }
@@ -202,25 +233,37 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     const cleanUpi =
       upiId && typeof upiId === 'string' && upiId.trim() ? upiId.trim() : null;
 
-    const newUser = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        phone: cleanPhone,
-        email: cleanEmail,
-        passwordHash,
-        role: targetRole,
-        permissions: resolvedPerms ? (resolvedPerms as any) : undefined,
-        isBlocked: false,
-        bonusPercentage: finalBonusPercentage,
-        bonusThresholdLimitPaise: thresholdPaise,
-        totalBalancePaise: 0,
-        upiId: cleanUpi,
-        bankAccountNumber: bankAccount?.accountNumber?.trim() || null,
-        bankIfsc: bankAccount?.ifsc?.trim()?.toUpperCase() || null,
-        bankName: bankAccount?.bankName?.trim() || null,
-        bankAccountHolderName: bankAccount?.accountHolderName?.trim() || null,
-      },
-    });
+    const creatorId = req.user.userId;
+    const creatorName = req.user.name;
+    const creatorRole = req.user.isSuperAdmin ? 'SUPER_ADMIN' : (req.user.role || 'EMPLOYEE');
+
+    const newUser = await withDbRetry(() =>
+      prisma.user.create({
+        data: {
+          name: name.trim(),
+          phone: cleanPhone,
+          email: cleanEmail || undefined,
+          passwordHash: passwordHash || undefined,
+          role: targetRole,
+          permissions: resolvedPerms ? (resolvedPerms as any) : undefined,
+          isBlocked: false,
+          bonusPercentage: finalBonusPercentage ?? 0,
+          totalBalancePaise: 0,
+          activeBonusPaise: 0,
+          lastDepositAmountPaise: 0,
+          cycleWithdrawnPaise: 0,
+          isBonusDeductedInCycle: false,
+          upiId: cleanUpi || undefined,
+          bankAccountNumber: bankAccount?.accountNumber?.trim() || null,
+          bankIfsc: bankAccount?.ifsc?.trim()?.toUpperCase() || null,
+          bankName: bankAccount?.bankName?.trim() || null,
+          bankAccountHolderName: bankAccount?.accountHolderName?.trim() || null,
+          createdById: creatorId,
+          createdByName: creatorName,
+          createdByRole: creatorRole,
+        },
+      })
+    );
 
     return res.status(201).json({
       success: true,
@@ -234,7 +277,7 @@ export const createUser = async (req: AuthenticatedRequest, res: Response) => {
     console.error('Error in createUser:', error);
     return res.status(500).json({
       success: false,
-      error: 'Failed to create account.',
+      error: error?.message || 'Failed to create account.',
     });
   }
 };
@@ -309,24 +352,65 @@ export const getAllUsers = async (req: AuthenticatedRequest, res: Response) => {
       }),
     ]);
 
-    // Aggregate approved deposit principal per user for accurate withdrawable display
+    // Aggregate approved deposits and withdrawals per user for accurate metrics display
     const userIds = users.map((u) => u.id);
-    const depositSums =
+    const [depositSums, withdrawalTxns] =
       userIds.length > 0
-        ? await prisma.transaction.groupBy({
-            by: ['userId'],
-            where: {
-              userId: { in: userIds },
-              type: TransactionType.DEPOSIT,
-              status: TransactionStatus.APPROVED,
-            },
-            _sum: { amountPaise: true },
-          })
-        : [];
+        ? await Promise.all([
+            prisma.transaction.groupBy({
+              by: ['userId'],
+              where: {
+                userId: { in: userIds },
+                type: TransactionType.DEPOSIT,
+                status: TransactionStatus.APPROVED,
+              },
+              _sum: { amountPaise: true, bonusPaise: true },
+            }),
+            prisma.transaction.findMany({
+              where: {
+                userId: { in: userIds },
+                type: TransactionType.WITHDRAWAL,
+                status: TransactionStatus.APPROVED,
+              },
+              select: {
+                userId: true,
+                amountPaise: true,
+                bonusPaise: true,
+                cashPaidPaise: true,
+              },
+            }),
+          ])
+        : [[], []];
 
-    const principalMap = new Map<string, number>();
+    const metricsMap = new Map<string, UserAggregatedMetrics>();
+    for (const id of userIds) {
+      metricsMap.set(id, {
+        totalCashDepositedPaise: 0,
+        totalPointsDepositedPaise: 0,
+        totalPointsWithdrawnPaise: 0,
+        totalCashWithdrawnPaise: 0,
+        totalBonusDeductedPaise: 0,
+      });
+    }
+
     for (const d of depositSums) {
-      principalMap.set(d.userId, d._sum.amountPaise || 0);
+      const m = metricsMap.get(d.userId);
+      if (m) {
+        const cash = d._sum.amountPaise || 0;
+        const bonus = d._sum.bonusPaise || 0;
+        m.totalCashDepositedPaise += cash;
+        m.totalPointsDepositedPaise += cash + bonus;
+      }
+    }
+
+    for (const w of withdrawalTxns) {
+      const m = metricsMap.get(w.userId);
+      if (m) {
+        m.totalPointsWithdrawnPaise += w.amountPaise;
+        m.totalBonusDeductedPaise += w.bonusPaise;
+        m.totalCashWithdrawnPaise +=
+          w.cashPaidPaise || Math.max(0, w.amountPaise - w.bonusPaise);
+      }
     }
 
     return res.status(200).json({
@@ -336,7 +420,12 @@ export const getAllUsers = async (req: AuthenticatedRequest, res: Response) => {
       limit: limitNum,
       totalPages: Math.ceil(totalUsers / limitNum),
       users: users.map((u) =>
-        formatManagedUser(u, principalMap.get(u.id) || 0)
+        formatManagedUser(
+          u,
+          metricsMap.get(u.id)?.totalCashDepositedPaise || 0,
+          0,
+          metricsMap.get(u.id)
+        )
       ),
     });
   } catch (error: any) {
@@ -415,7 +504,7 @@ export const updateUser = async (req: AuthenticatedRequest, res: Response) => {
           ? email.trim().toLowerCase()
           : null;
       if (cleanEmail && cleanEmail !== target.email) {
-        const dup = await prisma.user.findUnique({ where: { email: cleanEmail } });
+        const dup = await prisma.user.findFirst({ where: { email: cleanEmail } });
         if (dup) {
           return res.status(409).json({
             success: false,
@@ -547,8 +636,7 @@ export const updateEmployeePermissions = async (
 
 /**
  * PATCH /api/admin/users/:userId/bonus-config
- * Updates a client's custom bonusPercentage (requires canSetBonus)
- * and/or bonusThresholdLimit (requires canSetThreshold).
+ * Updates a client's custom bonusPercentage (requires canSetBonus).
  */
 export const updateUserBonusConfig = async (
   req: AuthenticatedRequest,
@@ -560,8 +648,7 @@ export const updateUserBonusConfig = async (
     }
 
     const { userId } = req.params;
-    const { bonusPercentage, bonusThresholdLimit, bonusThresholdLimitPaise } =
-      req.body;
+    const { bonusPercentage } = req.body;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -584,53 +671,29 @@ export const updateUserBonusConfig = async (
         });
       }
 
-      const percentage = Number(bonusPercentage);
-      if (isNaN(percentage) || percentage < 0 || percentage > 100) {
-        return res.status(400).json({
-          success: false,
-          error: 'bonusPercentage must be a valid number between 0 and 100.',
-        });
-      }
-      updates.bonusPercentage = percentage;
-    }
-
-    if (
-      bonusThresholdLimitPaise !== undefined ||
-      bonusThresholdLimit !== undefined
-    ) {
-      if (!req.user.isSuperAdmin && !req.user.permissions.canSetThreshold) {
-        return res.status(403).json({
-          success: false,
-          error:
-            'Access denied: You do not have permission to set client threshold limit.',
-        });
-      }
-
-      if (bonusThresholdLimitPaise !== undefined) {
-        const paise = Number(bonusThresholdLimitPaise);
-        if (isNaN(paise) || paise < 0) {
+      if (
+        bonusPercentage === null ||
+        bonusPercentage === '' ||
+        Number(bonusPercentage) === 0
+      ) {
+        // Clear custom client bonus so global daily running bonus applies
+        updates.bonusPercentage = 0;
+      } else {
+        const percentage = Number(bonusPercentage);
+        if (isNaN(percentage) || percentage < 0 || percentage > 100) {
           return res.status(400).json({
             success: false,
-            error: 'bonusThresholdLimitPaise must be a positive integer.',
+            error: 'bonusPercentage must be a valid number between 0 and 100.',
           });
         }
-        updates.bonusThresholdLimitPaise = Math.round(paise);
-      } else if (bonusThresholdLimit !== undefined) {
-        const limitRupees = Number(bonusThresholdLimit);
-        if (isNaN(limitRupees) || limitRupees < 0) {
-          return res.status(400).json({
-            success: false,
-            error: 'bonusThresholdLimit must be a positive number.',
-          });
-        }
-        updates.bonusThresholdLimitPaise = Math.round(limitRupees * 100);
+        updates.bonusPercentage = percentage;
       }
     }
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide bonusPercentage or bonusThresholdLimit to update.',
+        error: 'Please provide bonusPercentage to update.',
       });
     }
 
@@ -769,24 +832,426 @@ export const getUserById = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const depositAgg = await prisma.transaction.aggregate({
-      where: {
-        userId,
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.APPROVED,
-      },
-      _sum: { amountPaise: true },
-    });
+    const [depositAgg, withdrawalTxns] = await Promise.all([
+      prisma.transaction.aggregate({
+        where: {
+          userId,
+          type: TransactionType.DEPOSIT,
+          status: TransactionStatus.APPROVED,
+          isArchived: { not: true } as any,
+        },
+        _sum: { amountPaise: true, bonusPaise: true },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          userId,
+          type: TransactionType.WITHDRAWAL,
+          status: TransactionStatus.APPROVED,
+          isArchived: { not: true } as any,
+        },
+        select: {
+          amountPaise: true,
+          bonusPaise: true,
+          cashPaidPaise: true,
+        },
+      }),
+    ]);
+
+    const cashDeposited = depositAgg._sum?.amountPaise || 0;
+    const bonusEarned = depositAgg._sum?.bonusPaise || 0;
+    const pointsDeposited = cashDeposited + bonusEarned;
+
+    let pointsWithdrawn = 0;
+    let cashWithdrawn = 0;
+    let bonusDeducted = 0;
+
+    for (const w of withdrawalTxns) {
+      pointsWithdrawn += w.amountPaise;
+      bonusDeducted += w.bonusPaise;
+      cashWithdrawn +=
+        w.cashPaidPaise || Math.max(0, w.amountPaise - w.bonusPaise);
+    }
+
+    const metrics: UserAggregatedMetrics = {
+      totalCashDepositedPaise: cashDeposited,
+      totalPointsDepositedPaise: pointsDeposited,
+      totalPointsWithdrawnPaise: pointsWithdrawn,
+      totalCashWithdrawnPaise: cashWithdrawn,
+      totalBonusDeductedPaise: bonusDeducted,
+    };
+
+    // If Employee, aggregate detailed action performance tracking
+    let employeeActivity: any = undefined;
+    if (user.role === Role.EMPLOYEE) {
+      const [createdClients, processedTxns] = await Promise.all([
+        prisma.user.findMany({
+          where: { createdById: userId },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            createdAt: true,
+            isBlocked: true,
+            bonusPercentage: true,
+            totalBalancePaise: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.transaction.findMany({
+          where: { processedByAdminId: userId, isArchived: { not: true } as any },
+          include: {
+            user: { select: { id: true, name: true, phone: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+      ]);
+
+      const txnsList = processedTxns as any[];
+      const deposits = txnsList.filter((t) => t.type === TransactionType.DEPOSIT);
+      const withdrawals = txnsList.filter((t) => t.type === TransactionType.WITHDRAWAL);
+
+      employeeActivity = {
+        clients: createdClients.map((c) => ({
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          status: c.isBlocked ? 'blocked' : 'active',
+          bonusPercentage: c.bonusPercentage,
+          totalBalancePaise: c.totalBalancePaise,
+          createdAt: c.createdAt,
+        })),
+        deposits: deposits.map((d) => ({
+          id: d.id,
+          userId: d.userId,
+          userName: d.user?.name,
+          userPhone: d.user?.phone,
+          amountPaise: d.amountPaise,
+          bonusPaise: d.bonusPaise,
+          status: d.status,
+          utr: d.utr,
+          paymentApp: d.paymentApp,
+          createdAt: d.createdAt,
+        })),
+        withdrawals: withdrawals.map((w) => ({
+          id: w.id,
+          userId: w.userId,
+          userName: w.user?.name,
+          userPhone: w.user?.phone,
+          amountPaise: w.amountPaise,
+          bonusPaise: w.bonusPaise,
+          cashPaidPaise: w.cashPaidPaise || Math.max(0, w.amountPaise - w.bonusPaise),
+          status: w.status,
+          utr: w.utr,
+          paymentApp: w.paymentApp,
+          createdAt: w.createdAt,
+        })),
+        totalClientsAdded: createdClients.length,
+        totalDepositsHandled: deposits.length,
+        totalWithdrawalsHandled: withdrawals.length,
+      };
+    }
+
+    const formatted = formatManagedUser(user, cashDeposited, bonusEarned, metrics);
 
     return res.status(200).json({
       success: true,
-      user: formatManagedUser(user, depositAgg._sum.amountPaise || 0),
+      user: {
+        ...formatted,
+        employeeActivity,
+      },
     });
   } catch (error: any) {
     console.error('Error in getUserById:', error);
     return res.status(500).json({
       success: false,
       error: 'Failed to retrieve account details.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/employee/location
+ * Updates live GPS coordinates for an Employee / Admin
+ */
+export const updateEmployeeLocation = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const { latitude, longitude, accuracy, address } = req.body;
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Latitude and longitude are required.',
+      });
+    }
+
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    const acc = accuracy !== undefined ? Number(accuracy) : null;
+    const addr = typeof address === 'string' && address.trim() ? address.trim() : null;
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid coordinates.',
+      });
+    }
+
+    const now = new Date();
+
+    await Promise.all([
+      prisma.user.update({
+        where: { id: req.user.userId },
+        data: {
+          lastLatitude: lat,
+          lastLongitude: lng,
+          lastLocationAccuracy: acc,
+          lastLocationAddress: addr,
+          lastLocationUpdatedAt: now,
+        },
+      }),
+      prisma.employeeLocation.create({
+        data: {
+          employeeId: req.user.userId,
+          latitude: lat,
+          longitude: lng,
+          accuracy: acc,
+          address: addr,
+        },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      message: 'Location updated successfully.',
+      timestamp: now.toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Error in updateEmployeeLocation:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to record employee location.',
+    });
+  }
+};
+
+/**
+ * GET /api/admin/employees/locations
+ * Returns current locations of all active Employees for Super Admin tracking
+ */
+export const getEmployeeLocations = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    if (!req.user.isSuperAdmin && !req.user.permissions?.canManageClients) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: Only Super Admin can track employee locations.',
+      });
+    }
+
+    const employees = await prisma.user.findMany({
+      where: {
+        role: { in: [Role.EMPLOYEE, Role.ADMIN] },
+      },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        role: true,
+        isBlocked: true,
+        lastLatitude: true,
+        lastLongitude: true,
+        lastLocationAccuracy: true,
+        lastLocationAddress: true,
+        lastLocationUpdatedAt: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    return res.json({
+      success: true,
+      employees,
+    });
+  } catch (error: any) {
+    console.error('Error in getEmployeeLocations:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch employee locations.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/backup/reset-app
+ * Super Admin one-click action to reset application to zero state without deleting from database.
+ * Backs up all transactions & state into an archive file in Backup & Restore.
+ */
+export const resetApplicationData = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user || !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only Super Admin can reset application data.',
+      });
+    }
+
+    const snapshot = await createAppResetBackup(req.user.userId, req.user.name);
+    return res.status(200).json({
+      success: true,
+      message: 'Application has been reset to zero state. All data is securely archived in Backup & Restore.',
+      snapshot,
+    });
+  } catch (error: any) {
+    console.error('Error in resetApplicationData:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to reset application data.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/backup/delete-transaction/:id
+ * Super Admin soft-deletes a single transaction. Restorable in Backup & Restore.
+ */
+export const deleteSingleTransaction = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user || !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only Super Admin can delete transactions.',
+      });
+    }
+
+    const { id } = req.params;
+    const snapshot = await createSingleTransactionBackup(id, req.user.userId, req.user.name);
+    return res.status(200).json({
+      success: true,
+      message: 'Transaction deleted from live ledger. Restorable from Backup & Restore.',
+      snapshot,
+    });
+  } catch (error: any) {
+    console.error('Error in deleteSingleTransaction:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to delete transaction.',
+    });
+  }
+};
+
+/**
+ * GET /api/admin/backup/snapshots
+ * Returns all backup snapshots & soft-deleted items with 5-minute undo state.
+ */
+export const getBackupSnapshotsList = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const snapshots = await getAllBackupSnapshots();
+    return res.status(200).json({
+      success: true,
+      snapshots,
+    });
+  } catch (error: any) {
+    console.error('Error in getBackupSnapshotsList:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch backup snapshots.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/backup/restore/:snapshotId
+ * Restores an archived snapshot or transaction. Live data stays as it is.
+ * Enables 5-minute undo window.
+ */
+export const restoreBackupSnapshotController = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const { snapshotId } = req.params;
+    const snapshot = await restoreBackupSnapshot(snapshotId, req.user.userId, req.user.name);
+    return res.status(200).json({
+      success: true,
+      message: 'Data successfully restored to live application. Undo is available for 5 minutes.',
+      snapshot,
+    });
+  } catch (error: any) {
+    console.error('Error in restoreBackupSnapshotController:', error);
+    return res.status(400).json({
+      success: false,
+      error: error.message || 'Failed to restore backup snapshot.',
+    });
+  }
+};
+
+/**
+ * POST /api/admin/backup/undo-restore/:snapshotId
+ * Undoes a restore action within 5 minutes.
+ */
+export const undoRestoreBackupSnapshotController = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const { snapshotId } = req.params;
+    const snapshot = await undoRestoreBackupSnapshot(snapshotId);
+    return res.status(200).json({
+      success: true,
+      message: 'Restore undone successfully. Data returned to archived backup state.',
+      snapshot,
+    });
+  } catch (error: any) {
+    console.error('Error in undoRestoreBackupSnapshotController:', error);
+    return res.status(400).json({
+      success: false,
+      error: error.message || 'Failed to undo restore.',
+    });
+  }
+};
+
+/**
+ * DELETE /api/admin/backup/permanent/:snapshotId
+ * Permanently deletes a backup snapshot, its database records, and screenshot image files.
+ */
+export const deleteBackupPermanentlyController = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user || !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only Super Admin can permanently delete data from the database.',
+      });
+    }
+
+    const { snapshotId } = req.params;
+    const result = await deleteBackupPermanently(snapshotId);
+    return res.status(200).json({
+      success: true,
+      message: `Permanently deleted from database (${result.deletedTransactionsCount} records, ${result.deletedImagesCount} images).`,
+      result,
+    });
+  } catch (error: any) {
+    console.error('Error in deleteBackupPermanentlyController:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to permanently delete backup.',
     });
   }
 };

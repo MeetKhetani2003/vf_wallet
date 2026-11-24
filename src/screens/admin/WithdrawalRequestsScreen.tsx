@@ -69,7 +69,8 @@ export const WithdrawalRequestsScreen = () => {
             isThresholdReached: t.isThresholdReached,
             totalDepositPrincipalPaise: t.totalDepositPrincipalPaise,
             userTotalBalancePaise: t.user?.totalBalancePaise ?? t.amountPaise,
-            userThresholdLimitPaise: t.user?.bonusThresholdLimitPaise ?? 1000000,
+            bonusPaise: t.bonusPaise || 0,
+            cashPaidPaise: t.cashPaidPaise,
             paymentMethod: t.paymentApp || t.paymentMethod,
             bankDetails: parsedData?.accountNumber ? parsedData : undefined,
             upiId:
@@ -287,7 +288,7 @@ export const WithdrawalRequestsScreen = () => {
                       </Text>
                     </View>
 
-                    {item.isThresholdReached && (
+                    {(item.bonusPaise || 0) > 0 && (
                       <View style={styles.thresholdNotice}>
                         <Ionicons
                           name="information-circle"
@@ -295,15 +296,7 @@ export const WithdrawalRequestsScreen = () => {
                           color="#D97706"
                         />
                         <Text style={styles.thresholdNoticeText}>
-                          Threshold Rule Active (Limit:{' '}
-                          {formatPaiseToINR(
-                            item.userThresholdLimitPaise || 1000000
-                          )}
-                          ): Max payout capped at deposited principal (
-                          {formatPaiseToINR(
-                            item.totalDepositPrincipalPaise || 0
-                          )}
-                          ).
+                          Cycle Rule: {formatPaiseToINR(item.bonusPaise || 0)} bonus points deducted. Net cash payout: {formatPaiseToINR(item.cashPaidPaise || (item.amountPaise - (item.bonusPaise || 0)))}.
                         </Text>
                       </View>
                     )}

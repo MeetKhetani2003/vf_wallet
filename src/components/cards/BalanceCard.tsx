@@ -30,7 +30,17 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
 
   const displayBalance = isBalanceHidden
     ? '••••••••'
-    : formatPaiseToINR(availableBalance);
+    : `${(availableBalance / 100).toLocaleString('en-IN')} Points`;
+
+  const cashDeposited =
+    wallet?.totalCashDepositedPaise ?? wallet?.totalDepositPaise ?? 0;
+  const pointsDeposited =
+    wallet?.totalPointsDepositedPaise ??
+    (wallet?.totalDepositPaise || 0) + (wallet?.totalBonusPaise || 0);
+  const pointsWithdrawn =
+    wallet?.totalPointsWithdrawnPaise ?? wallet?.totalWithdrawalPaise ?? 0;
+  const cashWithdrawn =
+    wallet?.totalCashWithdrawnPaise ?? wallet?.totalWithdrawalPaise ?? 0;
 
   return (
     <View style={styles.shadowWrapper}>
@@ -44,7 +54,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <View style={styles.topRow}>
           <View>
             <View style={styles.balanceLabelRow}>
-              <Text style={styles.balanceLabel}>Available Balance</Text>
+              <Text style={styles.balanceLabel}>Available Points Balance</Text>
               <TouchableOpacity
                 onPress={onToggleHideBalance}
                 style={styles.eyeBtn}
@@ -58,9 +68,45 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
               </TouchableOpacity>
             </View>
             <Text style={styles.balanceAmount}>{displayBalance}</Text>
+            {wallet?.withdrawablePaise !== undefined && (
+              <Text style={styles.cashoutHint}>
+                Real Cash Value:{' '}
+                {isBalanceHidden
+                  ? '••••'
+                  : formatPaiseToINR(
+                      wallet.isBonusDeductedInCycle
+                        ? wallet.availableBalancePaise
+                        : Math.max(
+                            0,
+                            wallet.availableBalancePaise -
+                              (wallet.activeBonusPaise || 0)
+                          )
+                    )}
+              </Text>
+            )}
           </View>
 
-          {bonusRate > 0 && (
+          {wallet?.isBonusDeductedInCycle ? (
+            <View style={[styles.bonusBadge, { backgroundColor: 'rgba(22, 101, 52, 0.4)' }]}>
+              <MaterialCommunityIcons
+                name="check-decagram"
+                size={12}
+                color="#86EFAC"
+              />
+              <Text style={styles.bonusBadgeText}>100% Cashout Mode</Text>
+            </View>
+          ) : (wallet?.activeBonusPaise || 0) > 0 ? (
+            <View style={styles.bonusBadge}>
+              <MaterialCommunityIcons
+                name="star-four-points"
+                size={12}
+                color="#F59E0B"
+              />
+              <Text style={styles.bonusBadgeText}>
+                Active Bonus: {((wallet?.activeBonusPaise || 0) / 100).toLocaleString('en-IN')} Pts
+              </Text>
+            </View>
+          ) : bonusRate > 0 ? (
             <View style={styles.bonusBadge}>
               <MaterialCommunityIcons
                 name="star-four-points"
@@ -69,36 +115,43 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
               />
               <Text style={styles.bonusBadgeText}>{bonusRate}% Bonus Active</Text>
             </View>
-          )}
+          ) : null}
         </View>
 
         {/* Divider */}
         <View style={styles.divider} />
 
-        {/* 3 Metric Columns: Total Deposit, Total Withdrawal, Total Bonus */}
-        <View style={styles.metricsRow}>
+        {/* The 4 Core Financial Values Grid */}
+        <View style={styles.metricsGrid}>
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Total Deposit</Text>
+            <Text style={styles.metricLabel}>Cash Deposited</Text>
             <Text style={styles.metricValue}>
-              {isBalanceHidden ? '••••' : formatPaiseToINR(totalDeposit)}
+              {isBalanceHidden ? '••••' : formatPaiseToINR(cashDeposited)}
             </Text>
           </View>
 
-          <View style={styles.verticalDivider} />
-
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Total Withdrawal</Text>
-            <Text style={styles.metricValue}>
-              {isBalanceHidden ? '••••' : formatPaiseToINR(totalWithdrawal)}
-            </Text>
-          </View>
-
-          <View style={styles.verticalDivider} />
-
-          <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Bonus Earned</Text>
+            <Text style={styles.metricLabel}>Points Deposited</Text>
             <Text style={[styles.metricValue, styles.bonusText]}>
-              {isBalanceHidden ? '••••' : formatPaiseToINR(totalBonus)}
+              {isBalanceHidden
+                ? '••••'
+                : `${(pointsDeposited / 100).toLocaleString('en-IN')} Pts`}
+            </Text>
+          </View>
+
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Points Withdrawn</Text>
+            <Text style={styles.metricValue}>
+              {isBalanceHidden
+                ? '••••'
+                : `${(pointsWithdrawn / 100).toLocaleString('en-IN')} Pts`}
+            </Text>
+          </View>
+
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Cash Withdrawn</Text>
+            <Text style={styles.metricValue}>
+              {isBalanceHidden ? '••••' : formatPaiseToINR(cashWithdrawn)}
             </Text>
           </View>
         </View>
@@ -164,10 +217,16 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   balanceAmount: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
     color: colors.white,
     letterSpacing: -0.5,
+  },
+  cashoutHint: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '600',
+    marginTop: 2,
   },
   bonusBadge: {
     flexDirection: 'row',
@@ -190,13 +249,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.15)',
     marginVertical: 16,
   },
-  metricsRow: {
+  metricsGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    rowGap: 12,
   },
   metricItem: {
-    flex: 1,
+    width: '48%',
   },
   verticalDivider: {
     width: 1,

@@ -12,9 +12,8 @@ export const getTodayDateString = (): string => {
 };
 
 /**
- * Retrieves the currently active daily running bonus rate.
- * - If Super Admin set a bonus rate for today and isActive is true -> returns that rate (e.g. 10.0)
- * - If no bonus is set for today -> defaults to 0.0 (0%)
+ * Retrieves the currently active daily running bonus percentage.
+ * Defaults: bonus = 0% (if inactive/unset)
  */
 export const getRunningDailyBonusRate = async (): Promise<{
   percentage: number;
@@ -38,27 +37,31 @@ export const getRunningDailyBonusRate = async (): Promise<{
       };
     }
 
-    // Check system setting for global running bonus fallback
-    const fallbackSetting = await prisma.systemSetting.findUnique({
+    // Check system setting fallback
+    const fallbackBonus = await prisma.systemSetting.findUnique({
       where: { key: 'running_daily_bonus_rate' },
     });
 
-    if (fallbackSetting && fallbackSetting.value) {
-      const parsed = parseFloat(fallbackSetting.value);
+    let fallbackPct = 0.0;
+    let fallbackBonusActive = false;
+    if (fallbackBonus && fallbackBonus.value) {
+      const parsed = parseFloat(fallbackBonus.value);
       if (!isNaN(parsed) && parsed >= 0) {
-        return {
-          percentage: parsed,
-          isActive: true,
-          date: today,
-          isSetForToday: false,
-        };
+        fallbackPct = parsed;
+        fallbackBonusActive = true;
       }
     }
+
+    return {
+      percentage: fallbackPct,
+      isActive: fallbackBonusActive,
+      date: today,
+      isSetForToday: false,
+    };
   } catch (error) {
     console.warn('Error reading daily bonus rate:', error);
   }
 
-  // Default to 0% if no bonus is configured for the day
   return {
     percentage: 0.0,
     isActive: false,
@@ -69,7 +72,59 @@ export const getRunningDailyBonusRate = async (): Promise<{
 
 /**
  * Sets or updates the running bonus rate for the day.
- * (Super Admin only)
+ * (Super Admin or authorized employees with canSetBonus)
+ */
+export const setRunningDailySettings = async (params: {
+  percentage?: number;
+  isActive?: boolean;
+  adminId: string;
+  adminName: string;
+}) => {
+  const today = getTodayDateString();
+  const current = await getRunningDailyBonusRate();
+
+  const finalPercentage =
+    params.percentage !== undefined
+      ? Math.max(0, Math.min(100, Number(params.percentage) || 0))
+      : current.percentage;
+
+  const finalIsActive =
+    params.isActive !== undefined ? Boolean(params.isActive) : current.isActive;
+
+  const [dailyRecord] = await prisma.$transaction([
+    prisma.dailyBonus.upsert({
+      where: { date: today },
+      create: {
+        date: today,
+        percentage: finalPercentage,
+        isActive: finalIsActive,
+        createdById: params.adminId,
+        createdByName: params.adminName,
+      },
+      update: {
+        percentage: finalPercentage,
+        isActive: finalIsActive,
+        createdById: params.adminId,
+        createdByName: params.adminName,
+      },
+    }),
+    prisma.systemSetting.upsert({
+      where: { key: 'running_daily_bonus_rate' },
+      create: {
+        key: 'running_daily_bonus_rate',
+        value: finalIsActive ? String(finalPercentage) : '0',
+      },
+      update: {
+        value: finalIsActive ? String(finalPercentage) : '0',
+      },
+    }),
+  ]);
+
+  return dailyRecord;
+};
+
+/**
+ * Convenience wrapper
  */
 export const setRunningDailyBonusRate = async (
   percentage: number,
@@ -77,37 +132,10 @@ export const setRunningDailyBonusRate = async (
   adminName: string,
   isActive: boolean = true
 ) => {
-  const today = getTodayDateString();
-  const rate = Math.max(0, Math.min(100, Number(percentage) || 0));
-
-  const [dailyRecord] = await prisma.$transaction([
-    prisma.dailyBonus.upsert({
-      where: { date: today },
-      create: {
-        date: today,
-        percentage: rate,
-        isActive,
-        createdById: adminId,
-        createdByName: adminName,
-      },
-      update: {
-        percentage: rate,
-        isActive,
-        createdById: adminId,
-        createdByName: adminName,
-      },
-    }),
-    prisma.systemSetting.upsert({
-      where: { key: 'running_daily_bonus_rate' },
-      create: {
-        key: 'running_daily_bonus_rate',
-        value: isActive ? String(rate) : '0',
-      },
-      update: {
-        value: isActive ? String(rate) : '0',
-      },
-    }),
-  ]);
-
-  return dailyRecord;
+  return setRunningDailySettings({
+    percentage,
+    isActive,
+    adminId,
+    adminName,
+  });
 };

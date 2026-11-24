@@ -7,7 +7,7 @@ export interface EmployeePermissions {
   canDeposit: boolean;
   canWithdraw: boolean;
   canSetBonus: boolean;
-  canSetThreshold: boolean;
+  canSetThreshold?: boolean;
   canManageClients: boolean;
 }
 
@@ -36,10 +36,33 @@ export interface User {
   avatarUrl?: string;
   kycStatus?: 'verified' | 'pending' | 'unverified';
   bonusPercentage?: number;
-  bonusThresholdLimitPaise?: number;
   totalBalancePaise?: number;
+  activeBonusPaise?: number;
+  lastDepositAmountPaise?: number;
+  cycleWithdrawnPaise?: number;
+  isBonusDeductedInCycle?: boolean;
   totalDepositPrincipalPaise?: number;
+  totalCashDepositedPaise?: number;
+  totalPointsDepositedPaise?: number;
+  totalPointsWithdrawnPaise?: number;
+  totalCashWithdrawnPaise?: number;
+  totalBonusDeductedPaise?: number;
+  allocatedBonusPaise?: number;
   withdrawablePaise?: number;
+  // Employee location tracking
+  lastLatitude?: number | null;
+  lastLongitude?: number | null;
+  lastLocationAccuracy?: number | null;
+  lastLocationAddress?: string | null;
+  lastLocationUpdatedAt?: string | null;
+  // Creator / Onboarding tracking (Which employee added this client)
+  createdById?: string | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  // Employee performance activity data
+  employeeActivity?: EmployeeActivityData;
+  // Legacy optional
+  bonusThresholdLimitPaise?: number;
   isThresholdReached?: boolean;
 }
 
@@ -92,13 +115,15 @@ export interface Transaction {
   amountPaise: number; // Stored in integer paise to avoid floating-point issues
   bonusPercentage?: number; // Snapshot of bonus rate at deposit creation
   bonusPaise?: number; // Integer paise
+  bonusDeductedPaise?: number; // Deducted bonus points on cycle withdrawal
+  cashPaidPaise?: number; // Actual cash INR payout
   totalCreditPaise?: number; // amountPaise + bonusPaise for deposit
   withdrawablePaise?: number; // Withdrawable amount
   eligibleWithdrawablePaise?: number; // Calculated withdrawable real cash
-  isThresholdReached?: boolean; // True if user balance >= threshold limit
+  isThresholdReached?: boolean; // Legacy
   totalDepositPrincipalPaise?: number; // Total approved deposit principal
   userTotalBalancePaise?: number; // User total balance in paise
-  userThresholdLimitPaise?: number; // User custom bonus threshold limit in paise
+  userThresholdLimitPaise?: number; // Legacy
   paymentMethod?: string;
   upiId?: string;
   bankDetails?: BankAccount;
@@ -117,6 +142,9 @@ export interface Transaction {
   processedAt?: string; // ISO string
   processedBy?: string;
   notes?: string;
+  isArchived?: boolean;
+  archivedAt?: string;
+  backupBatchId?: string;
 }
 
 export interface UserWalletSummary {
@@ -128,8 +156,27 @@ export interface UserWalletSummary {
   availableBalancePaise: number;
   pendingDepositCount: number;
   pendingWithdrawalCount: number;
+  // The 4 Core Metrics
+  totalCashDepositedPaise?: number;
+  totalCashDepositedRupees?: number;
+  totalPointsDepositedPaise?: number;
+  totalPointsDepositedPoints?: number;
+  totalPointsWithdrawnPaise?: number;
+  totalPointsWithdrawnPoints?: number;
+  totalCashWithdrawnPaise?: number;
+  totalCashWithdrawnRupees?: number;
+  totalBonusDeductedPaise?: number;
+  totalBonusDeductedRupees?: number;
+  // Cycle metrics
   withdrawablePaise?: number;
   withdrawableRupees?: number;
+  netCashIfFullCashoutPaise?: number;
+  netCashIfFullCashoutRupees?: number;
+  activeBonusPaise?: number;
+  activeBonusRupees?: number;
+  isBonusDeductedInCycle?: boolean;
+  cycleWithdrawnPaise?: number;
+  lastDepositAmountPaise?: number;
   isThresholdReached?: boolean;
   bonusThresholdLimitPaise?: number;
   bonusThresholdLimitRupees?: number;
@@ -147,6 +194,14 @@ export interface AdminStats {
   totalEmployees?: number;
   totalUsers: number;
   totalTransactionsCount?: number;
+  // The 4 Core Metrics
+  totalCashDepositedPaise: number;
+  totalPointsDepositedPaise: number;
+  totalPointsWithdrawnPaise: number;
+  totalCashWithdrawnPaise: number;
+  totalClientsPointsBalancePaise?: number;
+  totalActiveBonusPaise?: number;
+  totalBonusDeductedPaise?: number;
   totalApprovedDepositsPaise: number;
   totalApprovedWithdrawalsPaise: number;
   totalBonusGivenPaise: number;
@@ -164,4 +219,54 @@ export interface AppNotification {
   read: boolean;
   createdAt: string;
   relatedTransactionId?: string;
+}
+
+export interface EmployeeActivityItem {
+  id: string;
+  name?: string;
+  phone?: string;
+  status?: string;
+  createdAt: string;
+  amountPaise?: number;
+  bonusPaise?: number;
+  cashPaidPaise?: number;
+  utr?: string;
+  paymentApp?: string;
+  userId?: string;
+  userName?: string;
+  userPhone?: string;
+  bonusPercentage?: number;
+  totalBalancePaise?: number;
+}
+
+export interface EmployeeActivityData {
+  clients: EmployeeActivityItem[];
+  deposits: EmployeeActivityItem[];
+  withdrawals: EmployeeActivityItem[];
+  totalClientsAdded?: number;
+  totalDepositsHandled?: number;
+  totalWithdrawalsHandled?: number;
+}
+
+export interface BackupSnapshot {
+  id: string;
+  title: string;
+  backupType: 'FULL_RESET' | 'SINGLE_TRANSACTION';
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+  transactionCount: number;
+  totalDepositPaise: number;
+  totalWithdrawPaise: number;
+  transactionIds: string[];
+  singleTransactionId?: string;
+  isRestored: boolean;
+  restoredAt?: string | null;
+  restoredById?: string | null;
+  restoredByName?: string | null;
+  canUndoUntil?: string | null;
+  canUndo?: boolean;
+  undoSecondsRemaining?: number;
+  isPermanentlyDeleted: boolean;
+  transactions?: any[];
 }

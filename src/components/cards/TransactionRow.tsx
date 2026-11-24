@@ -95,12 +95,37 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
           ]}
         >
           {typeConfig.sign}
-          {formatPaiseToINR(transaction.amountPaise)}
+          {isDeposit
+            ? `${(
+                (transaction.totalCreditPaise ??
+                  transaction.amountPaise + (transaction.bonusPaise || 0)) /
+                100
+              ).toLocaleString('en-IN')} Pts`
+            : `${(transaction.amountPaise / 100).toLocaleString('en-IN')} Pts`}
         </Text>
 
-        {isDeposit && transaction.bonusPaise ? (
-          <Text style={styles.bonusText}>
-            +{formatPaiseToINR(transaction.bonusPaise)} bonus
+        {isDeposit ? (
+          <Text style={styles.subCashText}>
+            Cash: ₹{(transaction.amountPaise / 100).toLocaleString('en-IN')}
+            {transaction.bonusPaise
+              ? ` • +${(transaction.bonusPaise / 100).toLocaleString('en-IN')} Pts Bonus`
+              : ''}
+          </Text>
+        ) : isWithdrawal ? (
+          <Text style={styles.subCashText}>
+            Cash: ₹
+            {(
+              (transaction.cashPaidPaise !== undefined &&
+              transaction.cashPaidPaise > 0
+                ? transaction.cashPaidPaise
+                : Math.max(
+                    0,
+                    transaction.amountPaise - (transaction.bonusPaise || 0)
+                  )) / 100
+            ).toLocaleString('en-IN')}
+            {transaction.bonusPaise
+              ? ` • -${(transaction.bonusPaise / 100).toLocaleString('en-IN')} Pts Bonus`
+              : ''}
           </Text>
         ) : null}
 
@@ -169,6 +194,12 @@ const styles = StyleSheet.create({
   amountText: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  subCashText: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    fontWeight: '500',
+    marginTop: 2,
   },
   bonusText: {
     fontSize: 11,

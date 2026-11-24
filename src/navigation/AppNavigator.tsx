@@ -7,6 +7,8 @@ import { UserNavigator } from './UserNavigator';
 import { AdminNavigator } from './AdminNavigator';
 import { Logo } from '../components/common/Logo';
 import { colors } from '../theme/colors';
+import { navigationRef } from './navigationRef';
+import { GlobalShareIntentHandler } from '../components/common/GlobalShareIntentHandler';
 
 export const AppNavigator = () => {
   const { user, role, isLoading } = useAuth();
@@ -25,7 +27,8 @@ export const AppNavigator = () => {
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
+      <GlobalShareIntentHandler />
       {!user || !role ? (
         <AuthNavigator />
       ) : role === 'admin' ? (

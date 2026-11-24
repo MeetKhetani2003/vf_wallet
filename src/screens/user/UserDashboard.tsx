@@ -18,7 +18,6 @@ import { TransactionRow } from '../../components/cards/TransactionRow';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useAuth } from '../../hooks/useAuth';
 import { useWallet } from '../../hooks/useWallet';
-import { useShareIntentListener } from '../../hooks/useShareIntentListener';
 
 export const UserDashboard = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
@@ -33,24 +32,10 @@ export const UserDashboard = () => {
     refreshData,
   } = useWallet();
 
-  const { sharedImage, clearSharedImage } = useShareIntentListener();
-
   const [refreshing, setRefreshing] = useState(false);
   const [filterType, setFilterType] = useState<
     'all' | 'deposit' | 'withdrawal' | 'bonus'
   >('all');
-
-  // Automatic WhatsApp Share Intent Listener
-  useEffect(() => {
-    if (sharedImage && sharedImage.uri) {
-      const uri = sharedImage.uri;
-      clearSharedImage();
-      navigation.navigate('OcrProcessing', {
-        imageUri: uri,
-        source: 'whatsapp_share',
-      });
-    }
-  }, [sharedImage, clearSharedImage, navigation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -133,6 +118,33 @@ export const UserDashboard = () => {
         onWithdrawPress={() => navigation.navigate('Withdraw')}
         bonusRate={bonusConfig.isEnabled ? bonusConfig.bonusPercentage : 0}
       />
+
+      {/* Deposit & Withdrawal Points Cycle Info Banner */}
+      {userWallet && (
+        <View style={styles.cycleBanner}>
+          <View style={styles.cycleHeaderRow}>
+            <View style={styles.cycleIconBox}>
+              <Ionicons name="repeat-outline" size={18} color="#D97706" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cycleBannerTitle}>
+                {userWallet.isBonusDeductedInCycle
+                  ? '100% Cashout Mode Active'
+                  : (userWallet.activeBonusPaise || 0) > 0
+                  ? 'Active Points & Bonus Cycle'
+                  : 'Standard Points Cycle'}
+              </Text>
+              <Text style={styles.cycleBannerSub}>
+                {userWallet.isBonusDeductedInCycle
+                  ? 'Bonus point deduction completed for this cycle. All subsequent withdrawals give 100% cash payout.'
+                  : (userWallet.activeBonusPaise || 0) > 0
+                  ? `Active bonus: ${((userWallet.activeBonusPaise || 0) / 100).toLocaleString('en-IN')} Pts. Full withdrawal deducts this bonus from cash payout.`
+                  : 'Deposit cash to receive instant wallet points with promotional bonus.'}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
 
       {/* Quick Action OCR Banner */}
       <View style={styles.ocrActionCard}>
@@ -253,6 +265,39 @@ export const UserDashboard = () => {
 };
 
 const styles = StyleSheet.create({
+  cycleBanner: {
+    backgroundColor: '#FFFBEB',
+    marginHorizontal: 16,
+    marginVertical: 4,
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  cycleHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  cycleIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FEF3C7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cycleBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  cycleBannerSub: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 15,
+  },
   ocrActionCard: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -19,13 +19,13 @@ app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 // Healthcheck endpoint
 app.get('/health', async (_req: Request, res: Response) => {
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await prisma.user.count();
 
     return res.status(200).json({
       status: 'ok',
       service: 'VF Wallet API',
       database: 'connected',
-      neonPostgres: true,
+      mongodb: true,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

@@ -19,18 +19,62 @@ import { StatusBadge } from '../../components/common/StatusBadge';
 import { SecondaryButton } from '../../components/buttons/SecondaryButton';
 import { ImageViewerModal } from '../../components/modals/ImageViewerModal';
 import { useWallet } from '../../hooks/useWallet';
+import { useAuth } from '../../hooks/useAuth';
+import { adminApi } from '../../services/api';
 import { formatPaiseToINR } from '../../utils/currency';
 
 export const TransactionDetailsScreen = () => {
   const route = useRoute<any>();
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
-  const { transactions } = useWallet();
+  const { transactions, refreshData } = useWallet();
+  const { isSuperAdmin } = useAuth();
 
   const transactionId = route.params?.transactionId;
   const transaction = transactions.find((t) => t.id === transactionId);
 
   const [imageModalVisible, setImageModalVisible] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handlePromptDelete = () => {
+    if (!transaction) return;
+    const formattedAmt =
+      transaction.type === 'deposit'
+        ? formatPaiseToINR(transaction.amountPaise)
+        : formatPaiseToINR(transaction.cashPaidPaise || transaction.amountPaise);
+
+    Alert.alert(
+      'Delete Transaction?',
+      `Are you sure you want to remove this ${transaction.type.toUpperCase()} of ${formattedAmt} from the live ledger?\n\n• The transaction will be removed from the active ledger.\n• The client's wallet points balance will be adjusted.\n• This entry will be preserved in Backup & Restore and can be restored anytime.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete & Move to Backup',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsDeleting(true);
+              const res = await adminApi.deleteTransaction(transaction.id);
+              if (res.success) {
+                Alert.alert(
+                  'Transaction Deleted',
+                  'Transaction moved to Backup & Restore and client balance adjusted.'
+                );
+                await refreshData();
+                navigation.goBack();
+              } else {
+                Alert.alert('Error', res.error || 'Failed to delete transaction.');
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Error occurred while deleting transaction.');
+            } finally {
+              setIsDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   if (!transaction) {
     return (
@@ -161,48 +205,109 @@ export const TransactionDetailsScreen = () => {
 
         {/* Financial Breakdown Card */}
         <View style={styles.card}>
-          <Text style={styles.cardHeading}>Financial Breakdown</Text>
+          <Text style={styles.cardHeading}>Points & Cash Breakdown</Text>
 
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Requested Amount</Text>
-            <Text style={styles.breakdownVal}>
-              {formatPaiseToINR(transaction.amountPaise)}
-            </Text>
-          </View>
+          {isDeposit ? (
+            <>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Cash Deposited</Text>
+                <Text style={styles.breakdownVal}>
+                  {formatPaiseToINR(transaction.amountPaise)}
+                </Text>
+              </View>
 
-          {isDeposit && transaction.bonusPaise !== undefined && (
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>
+                  Bonus Credit ({transaction.bonusPercentage || 10}%)
+                </Text>
+                <Text style={[styles.breakdownVal, styles.bonusVal]}>
+                  +{((transaction.bonusPaise || 0) / 100).toLocaleString('en-IN')} Points
+                </Text>
+              </View>
+
+              <View style={styles.breakdownDivider} />
+
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownTotalLabel}>Total Points Allocated</Text>
+                <Text style={styles.breakdownTotalVal}>
+                  {(
+                    (transaction.totalCreditPaise ||
+                      transaction.amountPaise + (transaction.bonusPaise || 0)) /
+                    100
+                  ).toLocaleString('en-IN')}{' '}
+                  Points
+                </Text>
+              </View>
+            </>
+          ) : isWithdrawal ? (
+            <>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Points Withdrawn</Text>
+                <Text style={styles.breakdownVal}>
+                  {(transaction.amountPaise / 100).toLocaleString('en-IN')} Points
+                </Text>
+              </View>
+
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Bonus Points Deducted</Text>
+                <Text
+                  style={[
+                    styles.breakdownVal,
+                    {
+                      color:
+                        (transaction.bonusPaise ||
+                          transaction.bonusDeductedPaise ||
+                          0) > 0
+                          ? colors.danger
+                          : colors.textSecondary,
+                    },
+                  ]}
+                >
+                  -
+                  {(
+                    (transaction.bonusPaise ||
+                      transaction.bonusDeductedPaise ||
+                      0) / 100
+                  ).toLocaleString('en-IN')}{' '}
+                  Points
+                </Text>
+              </View>
+
+              <View style={styles.breakdownDivider} />
+
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownTotalLabel}>Cash Value of Withdrawal</Text>
+                <Text style={[styles.breakdownTotalVal, { color: colors.success }]}>
+                  {formatPaiseToINR(
+                    transaction.cashPaidPaise !== undefined &&
+                      transaction.cashPaidPaise > 0
+                      ? transaction.cashPaidPaise
+                      : Math.max(
+                          0,
+                          transaction.amountPaise - (transaction.bonusPaise || 0)
+                        )
+                  )}
+                </Text>
+              </View>
+            </>
+          ) : (
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>
-                Bonus Credit ({transaction.bonusPercentage || 5}%)
-              </Text>
-              <Text style={[styles.breakdownVal, styles.bonusVal]}>
-                +{formatPaiseToINR(transaction.bonusPaise)}
+              <Text style={styles.breakdownTotalLabel}>Points Credited</Text>
+              <Text style={styles.breakdownTotalVal}>
+                {(transaction.amountPaise / 100).toLocaleString('en-IN')} Points
               </Text>
             </View>
           )}
-
-          <View style={styles.breakdownDivider} />
-
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownTotalLabel}>
-              {isWithdrawal ? 'Total Deducted' : 'Total Credited'}
-            </Text>
-            <Text style={styles.breakdownTotalVal}>
-              {formatPaiseToINR(
-                transaction.totalCreditPaise || transaction.amountPaise
-              )}
-            </Text>
-          </View>
 
           <View style={styles.balanceImpactRow}>
             <Ionicons name="information-circle-outline" size={16} color={colors.info} />
             <Text style={styles.balanceImpactText}>
               {transaction.status === 'approved'
                 ? isWithdrawal
-                  ? 'Wallet balance was deducted upon admin approval.'
-                  : 'Wallet balance and bonus were credited successfully.'
+                  ? 'Points debited from wallet and cash payout settled.'
+                  : 'Cash received and wallet credited with points & promotional bonus.'
                 : transaction.status === 'pending'
-                ? 'Pending admin approval. Balance has NOT been modified.'
+                ? 'Pending processing. Wallet balance has NOT been modified.'
                 : 'Request was rejected. Wallet balance was not affected.'}
             </Text>
           </View>
@@ -288,6 +393,26 @@ export const TransactionDetailsScreen = () => {
                 <Text style={styles.zoomText}>Tap to View Fullscreen</Text>
               </View>
             </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Super Admin Delete from Live Ledger Action */}
+        {isSuperAdmin && (
+          <View style={styles.deleteCard}>
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={handlePromptDelete}
+              disabled={isDeleting}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trash-outline" size={18} color={colors.white} />
+              <Text style={styles.deleteBtnText}>
+                {isDeleting ? 'Archiving...' : 'Delete Transaction (Move to Backup)'}
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.deleteHintText}>
+              Removes this entry from live balances and moves it safely into Backup & Restore.
+            </Text>
           </View>
         )}
       </View>
@@ -515,6 +640,38 @@ const styles = StyleSheet.create({
   notFoundText: {
     fontSize: 16,
     color: colors.textSecondary,
+  },
+  deleteCard: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.danger,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    gap: 8,
+    width: '100%',
+  },
+  deleteBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  deleteHintText: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 16,
   },
 });
 
