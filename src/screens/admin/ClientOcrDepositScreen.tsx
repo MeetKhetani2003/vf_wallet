@@ -478,16 +478,21 @@ export const ClientOcrDepositScreen = () => {
       if (res.success) {
         await Promise.all([refreshData(), loadClients()]);
         const targetClientId = selectedClient.id;
+        const actualBonusPaise = res.transaction?.bonusPaise ?? bonusPaise;
+        const actualPrincipalPaise = res.transaction?.amountPaise ?? amountPaise;
+        const actualTotalCredited = res.transaction?.totalCreditPaise ?? (actualPrincipalPaise + actualBonusPaise);
+        const actualBonusRate = res.transaction?.bonusPercentage ?? effectiveBonusPct;
+
         const newBalanceRupees = (
-          (res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + totalCreditPaise) / 100
+          (res.clientNewBalancePaise ?? (selectedClient.totalBalancePaise || 0) + actualTotalCredited) / 100
         ).toLocaleString('en-IN');
 
         Alert.alert(
           'Deposit Credited Instantly! ✅',
-          `${formatPaiseToINR(totalCreditPaise)} Points (${formatPaiseToINR(
-            amountPaise
-          )} Cash + ${effectiveBonusPct}% Bonus: ${formatPaiseToINR(
-            bonusPaise
+          `${formatPaiseToINR(actualTotalCredited)} Points (${formatPaiseToINR(
+            actualPrincipalPaise
+          )} Cash + ${actualBonusRate}% Bonus: ${formatPaiseToINR(
+            actualBonusPaise
           )} Points) auto-credited to ${selectedClient.name}.\n\nTotal Points Balance: ${newBalanceRupees} Points`,
           [
             { text: 'Done', onPress: resetForm },
