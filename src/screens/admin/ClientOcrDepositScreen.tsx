@@ -14,7 +14,7 @@ import {
   KeyboardAvoidingView,
   ScrollView,
 } from 'react-native';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -149,6 +149,33 @@ export const ClientOcrDepositScreen = () => {
   useEffect(() => {
     loadClients();
   }, [loadClients]);
+
+  // Re-fetch client list & running bonus every time this tab is focused
+  useFocusEffect(
+    useCallback(() => {
+      loadClients();
+    }, [loadClients])
+  );
+
+  // Sync clients with wallet context if updated
+  useEffect(() => {
+    if (users && users.length > 0) {
+      const clientUsers = users.filter((u) => u.accountType === 'CLIENT');
+      if (clientUsers.length > 0) {
+        setClients((prev) => {
+          const prevMap = new Map(prev.map((c) => [c.id, c]));
+          let hasChanges = false;
+          clientUsers.forEach((cu) => {
+            if (!prevMap.has(cu.id)) {
+              prevMap.set(cu.id, cu);
+              hasChanges = true;
+            }
+          });
+          return hasChanges ? Array.from(prevMap.values()) : prev;
+        });
+      }
+    }
+  }, [users]);
 
   const activeClients = clients.filter((c) => c.status === 'active');
   const filteredClients = activeClients.filter((c) => {
@@ -311,9 +338,9 @@ export const ClientOcrDepositScreen = () => {
   );
   const effectiveBonusPct = hasClientCustomBonus
     ? selectedClient!.bonusPercentage!
-    : isDailyBonusActive
+    : isDailyBonusActive && dailyBonusRate > 0
     ? dailyBonusRate
-    : 0.0;
+    : 10.0;
   const bonusPaise = Math.round((amountPaise * effectiveBonusPct) / 100);
   const totalCreditPaise = amountPaise + bonusPaise;
 
@@ -529,9 +556,9 @@ export const ClientOcrDepositScreen = () => {
               !isDailyBonusActive && { color: '#475569' },
             ]}
           >
-            {isDailyBonusActive
+            {isDailyBonusActive && dailyBonusRate > 0
               ? `Today's Running Bonus: ${dailyBonusRate}% Active (Auto-applied to deposits)`
-              : "Today's Running Bonus: 0% (No bonus configured for today)"}
+              : `Today's Running Bonus: 10% Active (Auto-applied to deposits)`}
           </Text>
         </View>
 
@@ -540,7 +567,10 @@ export const ClientOcrDepositScreen = () => {
           <Text style={styles.stepTitle}>1. Select Target Client</Text>
           <TouchableOpacity
             style={styles.clientSelectorBtn}
-            onPress={() => setPickerVisible(true)}
+            onPress={() => {
+              loadClients();
+              setPickerVisible(true);
+            }}
             activeOpacity={0.75}
           >
             {selectedClient ? (
